@@ -98,6 +98,8 @@ def main(argv: list[str] | None = None) -> None:
     for x, y in zip(xs, ys):
         err, proj_pix = graycode.getProjPixel(imgs, x, y)
         if not err:
+            # プロジェクタ座標をステップサイズ分拡大して中心にオフセットをかける
+            # これにより，得られたプロジェクタ座標（ブロック）の中心を指すようになる
             fixed_pix = (
                 step * (proj_pix[0] + 0.5),
                 step * (proj_pix[1] + 0.5),
@@ -114,7 +116,19 @@ def main(argv: list[str] | None = None) -> None:
         for (cam_x, cam_y), (proj_x, proj_y) in c2p_list:
             f.write(f"{cam_x}, {cam_y}, {proj_x}, {proj_y}\n")
 
-    print("output : './result_c2p'")
+    # NumPy形式でも保存
+    # 形状: (N, 4), 各行が [cam_x, cam_y, proj_x, proj_y]
+    c2p_array = np.array(
+        [
+            [cam_x, cam_y, proj_x, proj_y]
+            for (cam_x, cam_y), (proj_x, proj_y) in c2p_list
+        ],
+        dtype=np.float32,
+    )
+    np.save("result_c2p.npy", c2p_array)
+
+    print("NumPy array : './result_c2p.npy'")
+    print("output : './result_c2p.csv'")
     print()
 
 

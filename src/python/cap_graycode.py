@@ -7,6 +7,7 @@ from edsdk.camera_controller import CameraController
 from typing import List
 
 TARGETDIR = Path("data/graycode_pattern")
+CAPTUREDIR = Path("data/captured")
 
 
 def open_cam() -> None:
@@ -26,11 +27,11 @@ def capture() -> np.ndarray:
 
 
 def print_usage() -> None:
-    print("Usage : python cap_graycode.py")
+    print("Usage : python cap_graycode.py <window position x> <window position y>")
     print()
 
 
-def main(argv: List[str] | None) -> None:
+def main(argv: list[str] | None = None) -> None:
     if argv is None:
         argv = sys.argv
 
@@ -39,14 +40,12 @@ def main(argv: List[str] | None) -> None:
         return
 
     try:
-        proj_x = int(argv[1])
-        proj_y = int(argv[2])
+        window_pos_x = int(argv[1])
+        window_pos_y = int(argv[2])
     except ValueError:
-        print("Error: Arguments must be integers.")
+        print("height, width は整数で指定してください。")
         print_usage()
         return
-
-    print(f"Arguments: {argv}")
 
     graycode_imgs = []
     # グレイコードをファイルから参照
@@ -57,11 +56,22 @@ def main(argv: List[str] | None) -> None:
 
     cv2.namedWindow("Pattern", cv2.WINDOW_NORMAL)
     cv2.setWindowProperty("Pattern", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    cv2.resizeWindow("Pattern", proj_x, proj_y)
+    cv2.moveWindow("Pattern", window_pos_x, window_pos_y)
 
     for i, pat in enumerate(graycode_imgs):
         print(f"Displaying pattern image {i:02d}...")
         cv2.imshow("Pattern", pat)
         cv2.waitKey(500)  # 0.5秒待機してからキャプチャ
         captured_img = capture()
-        cv2.imwrite(f"./captured/capture_{i:02d}.png", captured_img)
+        captured_img_gray = cv2.cvtColor(captured_img, cv2.COLOR_RGB2GRAY)
+        cv2.imwrite(f"{CAPTUREDIR}/capture_{i:02d}.png", captured_img_gray)
+        print(f"Captured and saved image: capture_{i:02d}.png")
+    cv2.destroyAllWindows()
+    print("All patterns have been captured and saved.")
+
+    print()
+    print("=== Next step ===")
+    print(
+        "Run 'python decode.py <projector image height> <projector image width>' to decode the captured images."
+    )
+    print()
