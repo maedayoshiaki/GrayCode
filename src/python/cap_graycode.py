@@ -3,8 +3,9 @@ import numpy as np
 import glob
 import sys
 from pathlib import Path
-from edsdk.camera_controller import CameraController
 from typing import List
+
+from edsdk.camera_controller import CameraController
 
 TARGETDIR = Path("data/graycode_pattern")
 CAPTUREDIR = Path("data/captured")

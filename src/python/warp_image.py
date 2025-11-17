@@ -54,7 +54,7 @@ def inverse_warp_image(
     borderMode=cv2.BORDER_CONSTANT,
     borderValue=(0, 0, 0),
 ) -> np.ndarray:
-    # map の最後の要素から画像サイズを取得
+    # mapの後ろのタプルの最大値から画像サイズを取得
     MAP_H = int(max(p[1] for _, p in map)) + 1
     MAP_W = int(max(p[0] for _, p in map)) + 1
     if abs(src_img.shape[0] - MAP_H) > 1.0:
