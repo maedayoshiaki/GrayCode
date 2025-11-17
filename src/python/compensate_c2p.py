@@ -7,15 +7,19 @@ from scipy.interpolate import Rbf
 
 
 def load_c2p_numpy(
-    filename: str,
+    map_file_path: str,
 ) -> List[Tuple[Tuple[float, float], Tuple[float, float]]]:
-    """NumPy形式で保存されたカメラ座標とプロジェクタ座標の対応表を読み込む。"""
-    c2p_array = np.load(filename)  # shape: (N, 4)
-    c2p_list: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
-    for row in c2p_array:
-        cam_x, cam_y, proj_x, proj_y = row
-        c2p_list.append(((cam_x, cam_y), (proj_x, proj_y)))
-    return c2p_list
+    map_data = np.load(map_file_path, allow_pickle=True)
+    map_list: List[Tuple[Tuple[float, float], Tuple[float, float]]] = map_data.tolist()
+
+    if not isinstance(map_list, list):
+        raise TypeError("map_list must be a list")
+
+    for i, item in enumerate(map_list[:10]):  # 先頭だけ
+        if not (isinstance(item, tuple) and len(item) == 2):
+            raise TypeError(f"map_list[{i}] must be ((x,y),(u,v))")
+
+    return map_list
 
 
 def interpolate_c2p(
@@ -97,16 +101,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     c2p_list_interp = interpolate_c2p(cam_height, cam_width, c2p_list)
 
-    c2p_array_interp = np.array(
-        [
-            [cam_x, cam_y, proj_x, proj_y]
-            for (cam_x, cam_y), (proj_x, proj_y) in c2p_list_interp
-        ],
-        dtype=np.float32,
-    )
-
     out_filename = os.path.splitext(c2p_numpy_filename)[0] + "_compensated.npy"
-    np.save(out_filename, c2p_array_interp)
+    np.save(out_filename, np.array(c2p_list_interp, dtype=object))
     print(f"Saved compensated correspondences to '{out_filename}'")
 
     with open("result_c2p_compensated.csv", "w", encoding="utf-8") as f:

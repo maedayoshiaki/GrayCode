@@ -122,15 +122,7 @@ def main(argv: list[str] | None = None) -> None:
             f.write(f"{cam_x}, {cam_y}, {proj_x}, {proj_y}\n")
 
     # NumPy形式でも保存
-    # 形状: (N, 4), 各行が [cam_x, cam_y, proj_x, proj_y]
-    c2p_array = np.array(
-        [
-            [cam_x, cam_y, proj_x, proj_y]
-            for (cam_x, cam_y), (proj_x, proj_y) in c2p_list
-        ],
-        dtype=np.float32,
-    )
-    np.save("result_c2p.npy", c2p_array)
+    np.save("result_c2p.npy", np.array(c2p_list, dtype=object))
 
     print("NumPy array : './result_c2p.npy'")
     print("output : './result_c2p.csv'")

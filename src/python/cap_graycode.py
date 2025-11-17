@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> None:
         print_usage()
         return
 
-    graycode_imgs = []
+    graycode_imgs: List[np.ndarray] = []
     # グレイコードをファイルから参照
     for idx, fname in enumerate(sorted(glob.glob(str(TARGETDIR / "pattern_*.png")))):
         print(f"Loading pattern image: {fname}")
@@ -58,6 +58,8 @@ def main(argv: list[str] | None = None) -> None:
     cv2.setWindowProperty("Pattern", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
     cv2.moveWindow("Pattern", window_pos_x, window_pos_y)
 
+    open_cam()
+
     for i, pat in enumerate(graycode_imgs):
         print(f"Displaying pattern image {i:02d}...")
         cv2.imshow("Pattern", pat)
@@ -66,7 +68,10 @@ def main(argv: list[str] | None = None) -> None:
         captured_img_gray = cv2.cvtColor(captured_img, cv2.COLOR_RGB2GRAY)
         cv2.imwrite(f"{CAPTUREDIR}/capture_{i:02d}.png", captured_img_gray)
         print(f"Captured and saved image: capture_{i:02d}.png")
+
     cv2.destroyAllWindows()
+    close_cam()
+
     print("All patterns have been captured and saved.")
 
     print()
