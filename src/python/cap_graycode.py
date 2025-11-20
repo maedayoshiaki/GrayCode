@@ -1,0 +1,83 @@
+import cv2
+import numpy as np
+import glob
+import sys
+from pathlib import Path
+from typing import List
+
+from edsdk.camera_controller import CameraController
+
+TARGETDIR = Path("data/graycode_pattern")
+CAPTUREDIR = Path("data/captured")
+
+
+def open_cam() -> None:
+    pass
+
+
+def close_cam() -> None:
+    pass
+
+
+def capture() -> np.ndarray:
+    with CameraController(register_property_events=False) as camera:
+        camera.set_properties(av=5, tv=1 / 15, iso=100, image_quality="LJF")
+        imgs = camera.capture_numpy()
+        img = imgs[0]
+    return img
+
+
+def print_usage() -> None:
+    print("Usage : python cap_graycode.py <window position x> <window position y>")
+    print()
+
+
+def main(argv: list[str] | None = None) -> None:
+    if argv is None:
+        argv = sys.argv
+
+    if len(argv) != 3:
+        print_usage()
+        return
+
+    try:
+        window_pos_x = int(argv[1])
+        window_pos_y = int(argv[2])
+    except ValueError:
+        print("height, width は整数で指定してください。")
+        print_usage()
+        return
+
+    graycode_imgs: List[np.ndarray] = []
+    # グレイコードをファイルから参照
+    for idx, fname in enumerate(sorted(glob.glob(str(TARGETDIR / "pattern_*.png")))):
+        print(f"Loading pattern image: {fname}")
+        pat_img = cv2.imread(fname, cv2.IMREAD_GRAYSCALE)
+        graycode_imgs.append(pat_img)
+
+    cv2.namedWindow("Pattern", cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty("Pattern", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    cv2.moveWindow("Pattern", window_pos_x, window_pos_y)
+
+    open_cam()
+
+    for i, pat in enumerate(graycode_imgs):
+        print(f"Displaying pattern image {i:02d}...")
+        cv2.imshow("Pattern", pat)
+        cv2.waitKey(500)  # 0.5秒待機してからキャプチャ
+        captured_img = capture()
+        captured_img_gray = cv2.cvtColor(captured_img, cv2.COLOR_RGB2GRAY)
+        cv2.imwrite(f"{CAPTUREDIR}/capture_{i:02d}.png", captured_img_gray)
+        print(f"Captured and saved image: capture_{i:02d}.png")
+
+    cv2.destroyAllWindows()
+    close_cam()
+
+    print("All patterns have been captured and saved.")
+
+    print()
+    print("=== Next step ===")
+    print(
+        "Run 'python decode.py <projector image height> <projector image width>' to decode the captured images."
+    )
+    print()
