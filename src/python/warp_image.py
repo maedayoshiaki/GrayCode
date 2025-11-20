@@ -3,10 +3,12 @@ import numpy as np
 import cv2
 from typing import List, Tuple, Literal, Optional
 from enum import Enum
+from .interpolate_c2p import load_c2p_numpy
 
 
 class AggregationMethod(Enum):
     """複数のピクセルが同じ位置にマップされる場合の集約方法"""
+
     MEAN = "mean"  # 平均
     MEDIAN = "median"  # 中央値
     MAX = "max"  # 最大値
@@ -17,6 +19,7 @@ class AggregationMethod(Enum):
 
 class InpaintMethod(Enum):
     """穴埋め補完の方法"""
+
     NONE = "none"  # 補完なし
     TELEA = "telea"  # Telea のアルゴリズム
     NS = "ns"  # Navier-Stokes ベースのアルゴリズム
@@ -59,14 +62,8 @@ class PixelMapWarper:
         dst_xs = [p[1][0] for p in self.pixel_map]
         dst_ys = [p[1][1] for p in self.pixel_map]
 
-        self.src_bounds = (
-            min(src_xs), min(src_ys),
-            max(src_xs), max(src_ys)
-        )
-        self.dst_bounds = (
-            min(dst_xs), min(dst_ys),
-            max(dst_xs), max(dst_ys)
-        )
+        self.src_bounds = (min(src_xs), min(src_ys), max(src_xs), max(src_ys))
+        self.dst_bounds = (min(dst_xs), min(dst_ys), max(dst_xs), max(dst_ys))
 
     def forward_warp(
         self,
@@ -102,8 +99,12 @@ class PixelMapWarper:
 
         # 出力画像の初期化
         if len(src_img.shape) == 3:
-            dst_img = np.zeros((dst_height, dst_width, src_img.shape[2]), dtype=np.float64)
-            count_img = np.zeros((dst_height, dst_width, src_img.shape[2]), dtype=np.float64)
+            dst_img = np.zeros(
+                (dst_height, dst_width, src_img.shape[2]), dtype=np.float64
+            )
+            count_img = np.zeros(
+                (dst_height, dst_width, src_img.shape[2]), dtype=np.float64
+            )
         else:
             dst_img = np.zeros((dst_height, dst_width), dtype=np.float64)
             count_img = np.zeros((dst_height, dst_width), dtype=np.float64)
@@ -117,7 +118,12 @@ class PixelMapWarper:
                 img_y = int(src_y) - src_offset[1]
 
                 # 範囲チェック
-                if img_x < 0 or img_x >= src_img.shape[1] or img_y < 0 or img_y >= src_img.shape[0]:
+                if (
+                    img_x < 0
+                    or img_x >= src_img.shape[1]
+                    or img_y < 0
+                    or img_y >= src_img.shape[0]
+                ):
                     continue
 
                 # 出力座標を計算
@@ -146,7 +152,12 @@ class PixelMapWarper:
                 img_x = int(src_x) - src_offset[0]
                 img_y = int(src_y) - src_offset[1]
 
-                if img_x < 0 or img_x >= src_img.shape[1] or img_y < 0 or img_y >= src_img.shape[0]:
+                if (
+                    img_x < 0
+                    or img_x >= src_img.shape[1]
+                    or img_y < 0
+                    or img_y >= src_img.shape[0]
+                ):
                     continue
 
                 out_x = int(round(dst_x))
@@ -159,9 +170,13 @@ class PixelMapWarper:
                 count_img[out_y, out_x] += 1
 
                 if aggregation == AggregationMethod.MAX:
-                    dst_img[out_y, out_x] = np.maximum(dst_img[out_y, out_x], pixel_value)
+                    dst_img[out_y, out_x] = np.maximum(
+                        dst_img[out_y, out_x], pixel_value
+                    )
                 else:
-                    dst_img[out_y, out_x] = np.minimum(dst_img[out_y, out_x], pixel_value)
+                    dst_img[out_y, out_x] = np.minimum(
+                        dst_img[out_y, out_x], pixel_value
+                    )
 
             # 無限大の値を0に戻す
             mask = count_img == 0
@@ -170,15 +185,24 @@ class PixelMapWarper:
         elif aggregation == AggregationMethod.MEDIAN:
             # 中央値を取るためにリストを保持
             if len(src_img.shape) == 3:
-                pixel_lists = [[[] for _ in range(dst_width)] for _ in range(dst_height)]
+                pixel_lists = [
+                    [[] for _ in range(dst_width)] for _ in range(dst_height)
+                ]
             else:
-                pixel_lists = [[[] for _ in range(dst_width)] for _ in range(dst_height)]
+                pixel_lists = [
+                    [[] for _ in range(dst_width)] for _ in range(dst_height)
+                ]
 
             for (src_x, src_y), (dst_x, dst_y) in self.pixel_map:
                 img_x = int(src_x) - src_offset[0]
                 img_y = int(src_y) - src_offset[1]
 
-                if img_x < 0 or img_x >= src_img.shape[1] or img_y < 0 or img_y >= src_img.shape[0]:
+                if (
+                    img_x < 0
+                    or img_x >= src_img.shape[1]
+                    or img_y < 0
+                    or img_y >= src_img.shape[0]
+                ):
                     continue
 
                 out_x = int(round(dst_x))
@@ -187,7 +211,9 @@ class PixelMapWarper:
                 if out_x < 0 or out_x >= dst_width or out_y < 0 or out_y >= dst_height:
                     continue
 
-                pixel_lists[out_y][out_x].append(src_img[img_y, img_x].astype(np.float64))
+                pixel_lists[out_y][out_x].append(
+                    src_img[img_y, img_x].astype(np.float64)
+                )
 
             # 中央値を計算
             for y in range(dst_height):
@@ -202,7 +228,12 @@ class PixelMapWarper:
                 img_x = int(src_x) - src_offset[0]
                 img_y = int(src_y) - src_offset[1]
 
-                if img_x < 0 or img_x >= src_img.shape[1] or img_y < 0 or img_y >= src_img.shape[0]:
+                if (
+                    img_x < 0
+                    or img_x >= src_img.shape[1]
+                    or img_y < 0
+                    or img_y >= src_img.shape[0]
+                ):
                     continue
 
                 out_x = int(round(dst_x))
@@ -212,7 +243,10 @@ class PixelMapWarper:
                     continue
 
                 # FIRSTの場合は未設定の場合のみ、LASTの場合は常に上書き
-                if aggregation == AggregationMethod.FIRST and count_img[out_y, out_x] > 0:
+                if (
+                    aggregation == AggregationMethod.FIRST
+                    and count_img[out_y, out_x] > 0
+                ):
                     continue
 
                 dst_img[out_y, out_x] = src_img[img_y, img_x].astype(np.float64)
@@ -228,7 +262,7 @@ class PixelMapWarper:
         # トリミング
         if crop_rect is not None:
             x, y, w, h = crop_rect
-            dst_img = dst_img[y:y+h, x:x+w]
+            dst_img = dst_img[y : y + h, x : x + w]
 
         return dst_img
 
@@ -300,7 +334,7 @@ class PixelMapWarper:
         # トリミング
         if crop_rect is not None:
             x, y, w, h = crop_rect
-            dst_img = dst_img[y:y+h, x:x+w]
+            dst_img = dst_img[y : y + h, x : x + w]
 
         return dst_img
 
@@ -464,50 +498,49 @@ def inverse_warp_image(
     return warped_img
 
 
+def main() -> None:
+    # マップデータの読み込み
+    pixel_map = load_c2p_numpy("result_c2p_compensated.npy")
+
+    # 画像の読み込み
+    src_img = cv2.imread("captured_rgb_img_3.png")
+
+    # Warperの作成
+    warper = PixelMapWarper(pixel_map)
+
+    OFFSET_X = 1920 // 2 - 500 // 2
+    OFFSET_Y = 1080 // 2 - 500 // 2
+
+    # 順変換（forward warping）- 複数ピクセルが同じ位置にマップされる場合は平均
+    warped_img = warper.forward_warp(
+        src_img,
+        dst_size=(500, 500),  # 出力サイズを指定
+        src_offset=(0, 0),  # 入力画像のオフセット
+        aggregation=AggregationMethod.MEAN,  # 平均を使用
+        inpaint=InpaintMethod.TELEA,  # 穴埋め補完を使用
+        inpaint_radius=5,  # 補完半径
+        crop_rect=(OFFSET_X, OFFSET_Y, 500, 500),  # トリミング
+    )
+
+    # 逆変換（backward warping）- cv2.remapを使用
+    inv_warped_img = warper.backward_warp(
+        src_img,
+        dst_size=(1920, 1080),
+        src_offset=(0, 0),
+        interpolation=cv2.INTER_LINEAR,
+        crop_rect=(100, 100, 500, 500),
+    )
+
+    # 保存
+    cv2.imwrite("warped.jpg", warped_img)
+    cv2.imwrite("inv_warped.jpg", inv_warped_img)
+
+
+if __name__ == "__main__":
+    main()
+
+
 """
-使用例:
-
-# 基本的な使用方法（PixelMapWarperクラス）
-```python
-import cv2
-import numpy as np
-from warp_image import PixelMapWarper, AggregationMethod, InpaintMethod
-
-# マップデータの読み込み
-map_data = np.load("pixel_map.npy", allow_pickle=True)
-pixel_map = map_data.tolist()
-
-# 画像の読み込み
-src_img = cv2.imread("input.jpg")
-
-# Warperの作成
-warper = PixelMapWarper(pixel_map)
-
-# 順変換（forward warping）- 複数ピクセルが同じ位置にマップされる場合は平均
-warped_img = warper.forward_warp(
-    src_img,
-    dst_size=(1920, 1080),  # 出力サイズを指定
-    src_offset=(0, 0),  # 入力画像のオフセット
-    aggregation=AggregationMethod.MEAN,  # 平均を使用
-    inpaint=InpaintMethod.TELEA,  # 穴埋め補完を使用
-    inpaint_radius=5,  # 補完半径
-    crop_rect=(100, 100, 500, 500)  # トリミング
-)
-
-# 逆変換（backward warping）- cv2.remapを使用
-inv_warped_img = warper.backward_warp(
-    src_img,
-    dst_size=(1920, 1080),
-    src_offset=(0, 0),
-    interpolation=cv2.INTER_LINEAR,
-    crop_rect=(100, 100, 500, 500)
-)
-
-# 保存
-cv2.imwrite("warped.jpg", warped_img)
-cv2.imwrite("inv_warped.jpg", inv_warped_img)
-```
-
 # 異なる集約方法の使用例
 ```python
 # 最大値を使用
@@ -562,40 +595,40 @@ inv_warped = inverse_warp_image(
 """
 
 
-def print_usage() -> None:
-    print("Usage : python warp_image.py <input image> <output image> <map file>")
-    print()
+# def print_usage() -> None:
+#     print("Usage : python warp_image.py <input image> <output image> <map file>")
+#     print()
 
 
-def main(argv: list[str] | None = None) -> None:
-    if argv is None:
-        argv = sys.argv
+# def main(argv: list[str] | None = None) -> None:
+#     if argv is None:
+#         argv = sys.argv
 
-    if len(argv) != 4:
-        print_usage()
-        return
+#     if len(argv) != 4:
+#         print_usage()
+#         return
 
-    input_image_path = argv[1]
-    output_image_path = argv[2]
-    map_file_path = argv[3]
+#     input_image_path = argv[1]
+#     output_image_path = argv[2]
+#     map_file_path = argv[3]
 
-    # 入力画像の読み込み
-    src_img = cv2.imread(input_image_path)
+#     # 入力画像の読み込み
+#     src_img = cv2.imread(input_image_path)
 
-    # マップデータの読み込み
-    map_data = np.load(map_file_path, allow_pickle=True)
-    map_list: List[Tuple[Tuple[float, float], Tuple[float, float]]] = map_data.tolist()
+#     # マップデータの読み込み
+#     map_data = np.load(map_file_path, allow_pickle=True)
+#     map_list: List[Tuple[Tuple[float, float], Tuple[float, float]]] = map_data.tolist()
 
-    # 画像のワープ
-    warped_img = inverse_warp_image(
-        src_img,
-        map_list,
-        dst_rect=(1920 // 2 - 500 // 2, 1080 // 2 - 500 // 2, 500, 500),
-    )
+#     # 画像のワープ
+#     warped_img = inverse_warp_image(
+#         src_img,
+#         map_list,
+#         dst_rect=(1920 // 2 - 500 // 2, 1080 // 2 - 500 // 2, 500, 500),
+#     )
 
-    # 出力画像の保存
-    cv2.imwrite(output_image_path, warped_img)
+#     # 出力画像の保存
+#     cv2.imwrite(output_image_path, warped_img)
 
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
