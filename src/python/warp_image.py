@@ -422,7 +422,7 @@ class PixelMapWarper:
 
 def main() -> None:
     # マップデータの読み込み
-    pixel_map = load_c2p_numpy("result_c2p_compensated.npy")
+    pixel_map = load_c2p_numpy("result_c2p.npy")
 
     # 画像の読み込み
     src_img = cv2.imread("captured_rgb_img_3.png")
@@ -439,11 +439,11 @@ def main() -> None:
     # 順変換（forward warping）- 複数ピクセルが同じ位置にマップされる場合は平均
     warped_img = warper.forward_warp(
         src_img,
-        dst_size=(500, 500),  # 出力サイズを指定
+        dst_size=(1920, 1080),  # 出力サイズを指定
         src_offset=(0, 0),  # 入力画像のオフセット
-        aggregation=AggregationMethod.MEAN,  # 平均を使用
+        aggregation=AggregationMethod.MEDIAN,  # 中央値を使用
         inpaint=InpaintMethod.TELEA,  # 穴埋め補完を使用
-        inpaint_radius=5,  # 補完半径
+        inpaint_radius=1,  # 補完半径
         #        crop_rect=(OFFSET_X, OFFSET_Y, 500, 500),  # トリミング
     )
 
