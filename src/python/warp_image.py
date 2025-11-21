@@ -450,10 +450,10 @@ def main() -> None:
     # 逆変換（backward warping）- cv2.remapを使用
     inv_warped_img = warper.backward_warp(
         src_img,
-        dst_size=(1920, 1080),
+        #        dst_size=(1920, 1080),
         src_offset=(0, 0),
         interpolation=cv2.INTER_LINEAR,
-        crop_rect=(100, 100, 500, 500),
+        # crop_rect=(OFFSET_X, OFFSET_Y, 500, 500),
     )
 
     # 保存
