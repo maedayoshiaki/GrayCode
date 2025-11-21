@@ -429,17 +429,18 @@ class PixelMapWarper:
 
 def main() -> None:
     # マップデータの読み込み
-    pixel_map = load_c2p_numpy("result_c2p.npy")
+    pixel_map = load_c2p_numpy("result_c2p_compensated.npy")
 
     # 画像の読み込み
-    src_img = cv2.imread("captured_rgb_img_3.png")
+    src_img = cv2.imread("input.png")
     if src_img is None:
-        print("Error: failed to load image 'captured_rgb_img_3.png'")
+        print("Error: failed to load image 'input.png'")
         return
 
     # Warperの作成
     warper = PixelMapWarper(pixel_map)
 
+    # example offset for cropping
     OFFSET_X = 1920 // 2 - 500 // 2
     OFFSET_Y = 1080 // 2 - 500 // 2
 
@@ -451,7 +452,7 @@ def main() -> None:
         aggregation=AggregationMethod.MEDIAN,  # 中央値を使用
         inpaint=InpaintMethod.TELEA,  # 穴埋め補完を使用
         inpaint_radius=1,  # 補完半径
-        #        crop_rect=(OFFSET_X, OFFSET_Y, 500, 500),  # トリミング
+        crop_rect=(OFFSET_X, OFFSET_Y, 500, 500),  # トリミング
     )
 
     # 逆変換（backward warping）- cv2.remapを使用
