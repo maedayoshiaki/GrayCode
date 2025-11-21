@@ -122,9 +122,10 @@ class PixelMapWarper:
                 ):
                     continue
 
-                # 元画像の座標を計算
-                img_x = int(src_x) - src_offset[0]
-                img_y = int(src_y) - src_offset[1]
+                # 元画像の座標を計算（ピクセル中心座標系を考慮）
+                # マップ座標0.5 = ピクセル0の中心 = 画像インデックス0
+                img_x = int(np.floor(src_x)) - src_offset[0]
+                img_y = int(np.floor(src_y)) - src_offset[1]
 
                 # 範囲チェック
                 if (
@@ -135,9 +136,9 @@ class PixelMapWarper:
                 ):
                     continue
 
-                # 出力座標を計算
-                out_x = int(round(dst_x))
-                out_y = int(round(dst_y))
+                # 出力座標を計算（ピクセル中心座標系を考慮）
+                out_x = int(np.floor(dst_x))
+                out_y = int(np.floor(dst_y))
 
                 if out_x < 0 or out_x >= dst_width or out_y < 0 or out_y >= dst_height:
                     continue
@@ -167,8 +168,9 @@ class PixelMapWarper:
                 ):
                     continue
 
-                img_x = int(src_x) - src_offset[0]
-                img_y = int(src_y) - src_offset[1]
+                # 元画像の座標を計算（ピクセル中心座標系を考慮）
+                img_x = int(np.floor(src_x)) - src_offset[0]
+                img_y = int(np.floor(src_y)) - src_offset[1]
 
                 if (
                     img_x < 0
@@ -178,8 +180,9 @@ class PixelMapWarper:
                 ):
                     continue
 
-                out_x = int(round(dst_x))
-                out_y = int(round(dst_y))
+                # 出力座標を計算（ピクセル中心座標系を考慮）
+                out_x = int(np.floor(dst_x))
+                out_y = int(np.floor(dst_y))
 
                 if out_x < 0 or out_x >= dst_width or out_y < 0 or out_y >= dst_height:
                     continue
@@ -221,8 +224,9 @@ class PixelMapWarper:
                 ):
                     continue
 
-                img_x = int(src_x) - src_offset[0]
-                img_y = int(src_y) - src_offset[1]
+                # 元画像の座標を計算（ピクセル中心座標系を考慮）
+                img_x = int(np.floor(src_x)) - src_offset[0]
+                img_y = int(np.floor(src_y)) - src_offset[1]
 
                 if (
                     img_x < 0
@@ -232,8 +236,9 @@ class PixelMapWarper:
                 ):
                     continue
 
-                out_x = int(round(dst_x))
-                out_y = int(round(dst_y))
+                # 出力座標を計算（ピクセル中心座標系を考慮）
+                out_x = int(np.floor(dst_x))
+                out_y = int(np.floor(dst_y))
 
                 if out_x < 0 or out_x >= dst_width or out_y < 0 or out_y >= dst_height:
                     continue
@@ -261,8 +266,9 @@ class PixelMapWarper:
                 ):
                     continue
 
-                img_x = int(src_x) - src_offset[0]
-                img_y = int(src_y) - src_offset[1]
+                # 元画像の座標を計算（ピクセル中心座標系を考慮）
+                img_x = int(np.floor(src_x)) - src_offset[0]
+                img_y = int(np.floor(src_y)) - src_offset[1]
 
                 if (
                     img_x < 0
@@ -272,8 +278,9 @@ class PixelMapWarper:
                 ):
                     continue
 
-                out_x = int(round(dst_x))
-                out_y = int(round(dst_y))
+                # 出力座標を計算（ピクセル中心座標系を考慮）
+                out_x = int(np.floor(dst_x))
+                out_y = int(np.floor(dst_y))
 
                 if out_x < 0 or out_x >= dst_width or out_y < 0 or out_y >= dst_height:
                     continue
@@ -342,8 +349,8 @@ class PixelMapWarper:
             if np.isnan(src_x) or np.isnan(src_y) or np.isnan(dst_x) or np.isnan(dst_y):
                 continue
 
-            # 逆変換なので、dst -> src へのマッピングを作成
-            map_key = (int(round(src_x)), int(round(src_y)))
+            # 逆変換なので、dst -> src へのマッピングを作成（ピクセル中心座標系を考慮）
+            map_key = (int(np.floor(src_x)), int(np.floor(src_y)))
             map_dict[map_key] = (dst_x, dst_y)
 
         # マップ配列を作成
