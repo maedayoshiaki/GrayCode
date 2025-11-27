@@ -13,7 +13,6 @@ class AggregationMethod(Enum):
     MAX = "max"  # 最大値
     MIN = "min"  # 最小値
     LAST = "last"  # 最後の値（上書き）
-    # MEDIAN = "median" # PyTorchでの効率的な実装が難しいため、今回は省略またはCPU処理推奨
 
 
 class InpaintMethod(Enum):
@@ -21,7 +20,6 @@ class InpaintMethod(Enum):
 
     NONE = "none"
     CONV = "conv"  # 畳み込みによる簡易補完 (GPU対応)
-    # TELEA/NS はOpenCV依存のため、GPU完全対応版としては簡易実装を提供
 
 
 class PixelMapWarperTorch:
@@ -54,7 +52,6 @@ class PixelMapWarperTorch:
         # データのロードとTensor化
         if isinstance(pixel_map, list):
             # List[Tuple] -> Tensor
-            # 構造をフラットにして (N, 4) に変換
             flat_data = []
             for (sx, sy), (dx, dy) in pixel_map:
                 flat_data.append([sx, sy, dx, dy])
@@ -64,7 +61,6 @@ class PixelMapWarperTorch:
         elif isinstance(pixel_map, np.ndarray):
             self.map_tensor = torch.from_numpy(pixel_map).float().to(self.device)
             if self.map_tensor.ndim == 3 and self.map_tensor.shape[1:] == (2, 2):
-                # reshape (N, 2, 2) -> (N, 4) if necessary
                 self.map_tensor = self.map_tensor.view(-1, 4)
         elif isinstance(pixel_map, torch.Tensor):
             self.map_tensor = pixel_map.float().to(self.device)
@@ -112,18 +108,7 @@ class PixelMapWarperTorch:
     ) -> torch.Tensor:
         """
         順変換 (Splatting)
-
-        Args:
-            src_img: 入力画像 Tensor (C, H, W) または (B, C, H, W). 値域は[0, 255]でも[0, 1]でも可。
-            dst_size: (width, height)
-            src_offset: (offset_x, offset_y)
-            aggregation: 集約方法
-            inpaint: 補完方法
-            inpaint_iter: 補完の反復回数（半径に相当）
-            crop_rect: (x, y, w, h)
-
-        Returns:
-            変換後画像 Tensor (same shape style as input)
+        ソース画像のピクセルをマップに従ってデスティネーションへ飛ばします。
         """
         # 入力形状の正規化 (B, C, H, W)
         is_batch = src_img.ndim == 4
@@ -168,7 +153,6 @@ class PixelMapWarperTorch:
         dst_indices = d_y * dst_w + d_x  # (N_points,)
 
         # ピクセル値の取得 (B, C, N_points)
-        # src_img[:, :, s_y, s_x] は advanced indexing
         pixel_values = src_img[:, :, s_y, s_x]
 
         # 出力バッファ作成
@@ -180,30 +164,15 @@ class PixelMapWarperTorch:
         )
 
         # 3. 集約処理 (Splatting)
-        # index_add_ や scatter_reduce_ を使用
-
         if aggregation == AggregationMethod.MEAN:
-            # 加算
             out_img.index_add_(2, dst_indices, pixel_values)
-
-            # カウント（平均計算用）
-            ones = (
-                torch.ones_like(dst_indices, dtype=torch.float32)
-                .unsqueeze(0)
-                .unsqueeze(0)
-            )
+            ones = torch.ones_like(dst_indices, dtype=torch.float32).view(1, 1, -1)
             count_img.index_add_(2, dst_indices, ones)
-
-            # 平均化
             mask = count_img > 0
-            # ゼロ除算回避
             out_img = torch.where(mask, out_img / (count_img + 1e-8), out_img)
 
         elif aggregation == AggregationMethod.MAX:
-            # 初期値を小さく
             out_img.fill_(-1e9)
-            # scatter_reduce_ (PyTorch 1.12+)
-            # "amax" は atomic max
             out_img.scatter_reduce_(
                 2,
                 dst_indices.unsqueeze(0).unsqueeze(0).expand(B, C, -1),
@@ -211,16 +180,8 @@ class PixelMapWarperTorch:
                 reduce="amax",
                 include_self=False,
             )
-
-            # 値が入らなかった場所を0に戻す（または背景色）
             out_img[out_img == -1e9] = 0
-
-            # マスク作成用
-            ones = (
-                torch.ones_like(dst_indices, dtype=torch.float32)
-                .unsqueeze(0)
-                .unsqueeze(0)
-            )
+            ones = torch.ones_like(dst_indices, dtype=torch.float32).view(1, 1, -1)
             count_img.index_add_(2, dst_indices, ones)
 
         elif aggregation == AggregationMethod.MIN:
@@ -233,33 +194,23 @@ class PixelMapWarperTorch:
                 include_self=False,
             )
             out_img[out_img == 1e9] = 0
-
-            ones = (
-                torch.ones_like(dst_indices, dtype=torch.float32)
-                .unsqueeze(0)
-                .unsqueeze(0)
-            )
+            ones = torch.ones_like(dst_indices, dtype=torch.float32).view(1, 1, -1)
             count_img.index_add_(2, dst_indices, ones)
 
         elif aggregation == AggregationMethod.LAST:
-            # Lastの場合は単純に書き込む（並列処理の場合、順序は保証されないことに注意）
-            # 後勝ちにするため、通常の scatter_ （非決定論的）を使用
             out_img.scatter_(
-                2, dst_indices.unsqueeze(0).unsqueeze(0).expand(B, C, -1), pixel_values
+                2,
+                dst_indices.unsqueeze(0).unsqueeze(0).expand(B, C, -1),
+                pixel_values,
             )
-
-            ones = (
-                torch.ones_like(dst_indices, dtype=torch.float32)
-                .unsqueeze(0)
-                .unsqueeze(0)
-            )
+            ones = torch.ones_like(dst_indices, dtype=torch.float32).view(1, 1, -1)
             count_img.index_add_(2, dst_indices, ones)
 
         # Reshape back to image
         out_img = out_img.view(B, C, dst_h, dst_w)
         count_img = count_img.view(1, 1, dst_h, dst_w)
 
-        # 4. Inpainting (Simple GPU convolution based)
+        # 4. Inpainting
         if inpaint == InpaintMethod.CONV:
             out_img = self._apply_inpaint_conv(
                 out_img, count_img, iterations=inpaint_iter
@@ -283,13 +234,12 @@ class PixelMapWarperTorch:
         mode: str = "bilinear",
         padding_mode: str = "zeros",
         crop_rect: Optional[Tuple[int, int, int, int]] = None,
+        fill_grid_iter: int = 5,  # グリッド自体の補間回数
     ) -> torch.Tensor:
         """
         逆変換 (Sampling)
-        grid_sampleを使用するため、スパースなマップからデンスなグリッドを作成します。
-
-        注意: pixel_mapがスパース（点群）の場合、事前にDenseなマップへの補間が必要ですが、
-        ここでは単純にNearest Neighborで埋める実装になっています。
+        Forward Map (src -> dst) の情報を使って Backward Map (dst -> src) を構築し、
+        グリッドの隙間を畳み込みで埋めた後に grid_sample を実行します。
         """
         is_batch = src_img.ndim == 4
         if not is_batch:
@@ -304,12 +254,9 @@ class PixelMapWarperTorch:
         else:
             dst_w, dst_h = dst_size
 
+        # ---------------------------------------------------------
         # 1. Flow Field (Grid) の作成 (dst -> src)
-        # gridの初期化 (H, W, 2)
-        # 値が入っていない場所を識別するために -2 (範囲外) で初期化
-        grid = torch.full(
-            (1, dst_h, dst_w, 2), -2.0, device=self.device, dtype=torch.float32
-        )
+        # ---------------------------------------------------------
 
         # 座標取得
         src_x = self.map_tensor[:, 0] - src_offset[0]
@@ -324,25 +271,68 @@ class PixelMapWarperTorch:
         s_x = src_x[valid]
         s_y = src_y[valid]
 
-        # 座標の正規化: grid_sampleは [-1, 1] の範囲を期待する
-        # -1: 左端/上端, 1: 右端/下端
-        norm_s_x = 2.0 * s_x / (W - 1) - 1.0
-        norm_s_y = 2.0 * s_y / (H - 1) - 1.0
+        # --- グリッドを画像として扱い、穴埋めを行う ---
 
-        # Gridに値を埋める (Last wins)
-        # ここはスパースなマップの場合、穴あきになります
-        grid[0, d_y, d_x, 0] = norm_s_x
-        grid[0, d_y, d_x, 1] = norm_s_y
+        # グリッド用バッファ: (1, 2, H, W) -> Channel dim is (x, y) coordinates
+        # 初期値は0
+        grid_map = torch.zeros(
+            (1, 2, dst_h, dst_w), device=self.device, dtype=torch.float32
+        )
 
-        # スパースな穴を埋める (簡易的Nearest Neighbor)
-        # マップ自体がDenseであることを前提とするか、ここで補間が必要
-        # この実装では、マップが存在しないピクセルは padding_mode に従います（初期値が-2なので）
+        # データの有無を管理するマスク (1, 1, H, W)
+        grid_count = torch.zeros(
+            (1, 1, dst_h, dst_w), device=self.device, dtype=torch.float32
+        )
 
-        # 2. Grid Sample
-        # grid shape: (N, H_out, W_out, 2)
+        # フラットなインデックス計算
+        dst_indices = d_y * dst_w + d_x
+
+        # ソース座標を (2, N) にまとめる
+        src_coords = torch.stack([s_x, s_y], dim=0)  # (2, N_points)
+
+        # Scatterを使ってグリッドに座標を書き込む (Last wins)
+        # shape合わせ: (1, 2, H*W)
+        grid_flat = grid_map.view(1, 2, -1)
+        mask_flat = grid_count.view(1, 1, -1)
+
+        # 値の書き込み
+        grid_flat.scatter_(
+            2, dst_indices.unsqueeze(0).expand(1, 2, -1), src_coords.unsqueeze(0)
+        )
+        mask_flat.scatter_(
+            2,
+            dst_indices.unsqueeze(0).expand(1, 1, -1),
+            torch.ones_like(dst_indices, dtype=torch.float32).unsqueeze(0).unsqueeze(0),
+        )
+
+        # ビューを元に戻す
+        grid_map = grid_flat.view(1, 2, dst_h, dst_w)
+        grid_count = mask_flat.view(1, 1, dst_h, dst_w)
+
+        # ★ グリッド自体の穴埋め ★
+        # 生座標の状態で補間することで、近傍のソース座標で埋める
+        if fill_grid_iter > 0:
+            grid_map = self._apply_inpaint_conv(
+                grid_map, grid_count, iterations=fill_grid_iter
+            )
+
+        # ---------------------------------------------------------
+        # 2. 座標の正規化と Grid Sample
+        # ---------------------------------------------------------
+
+        # grid_sample用に (N, H, W, 2) に変換
+        grid = grid_map.permute(0, 2, 3, 1)
+
+        # 座標の正規化: [-1, 1]
+        # grid[..., 0] is x, grid[..., 1] is y
+        # 分母が0にならないよう max(..., 1)
+        grid[..., 0] = 2.0 * grid[..., 0] / max(W - 1, 1) - 1.0
+        grid[..., 1] = 2.0 * grid[..., 1] / max(H - 1, 1) - 1.0
+
+        # バッチサイズに合わせて拡張
         grid_batch = grid.expand(B, -1, -1, -1)
 
-        # align_corners=True が OpenCV の挙動に近い
+        # Grid Sample実行
         out_img = F.grid_sample(
             src_img,
             grid_batch,
@@ -391,39 +381,53 @@ class PixelMapWarperTorch:
             neighbor_avg = F.conv2d(current_img, kernel, padding=1, groups=img.shape[1])
 
             # 穴の部分だけ更新
-            # current_img = current_img * (1 - is_hole) + neighbor_avg * is_hole
-            # ただし、neighbor_avgも穴を含んでいる可能性があるので、本来はマスク付き畳み込みが必要だが
-            # 簡易実装として、値を更新していく
             current_img = torch.where(is_hole, neighbor_avg, current_img)
 
             # マスクの更新（少し縮小させる＝穴が埋まったとみなす）
-            # 厳密なマスク更新ではないが、反復で徐々に埋まる
+            # 注: マスク自体もconvして侵食させるのが正確だが、簡易的に画像の値更新のみで進める
+            # 厳密には count_img 自体も伝播させる必要があるが、数回のイテレーションなら
+            # 周囲から値が染み出す効果だけで十分な場合が多い。
+
+            # 今回はmaskも更新しないと「まだ埋まってない」と判断されて更新が止まる可能性があるため、
+            # マスクも収縮(Erosion)させる
+            # Max pooling で近傍に0(データあり)があれば0にする -> Erosion in mask(1=hole) means Dilation of data
+            mask = -F.max_pool2d(-mask, kernel_size=3, stride=1, padding=1)
 
         return current_img
 
 
 # --- 使用例 ---
 def main():
+    # GPU設定
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+
     # ダミーデータ作成
     # 100x100の画像を 200x200のキャンバスに配置するようなマップ
     src_h, src_w = 100, 100
     dst_h, dst_w = 200, 200
 
-    # 画像
-    src_img_np = np.random.randint(0, 255, (src_h, src_w, 3), dtype=np.uint8)
+    # 画像: グラデーションで見やすくする
+    src_img_np = np.zeros((src_h, src_w, 3), dtype=np.uint8)
+    for y in range(src_h):
+        for x in range(src_w):
+            src_img_np[y, x] = [x * 2, y * 2, (x + y)]
+
     src_img_tensor = torch.from_numpy(src_img_np).permute(2, 0, 1)  # (3, H, W)
 
     # マップ: 単純な平行移動とスケーリング
-    # src(x, y) -> dst(x*1.5 + 20, y*1.5 + 20)
+    # src(x, y) -> dst(x*1.8 + 20, y*1.8 + 20)
+    # 拡大率が大きいほど穴が開きやすい
     map_list = []
+    scale = 1.8
     for y in range(src_h):
         for x in range(src_w):
-            dx = x * 1.5 + 20
-            dy = y * 1.5 + 20
+            dx = x * scale + 20
+            dy = y * scale + 20
             map_list.append(((x, y), (dx, dy)))
 
     # Warper初期化
-    warper = PixelMapWarperTorch(map_list, device="cpu")  # GPUがあれば 'cuda'
+    warper = PixelMapWarperTorch(map_list, device=device)
 
     # Forward Warp
     print("Forward warping...")
@@ -432,11 +436,15 @@ def main():
         dst_size=(dst_w, dst_h),
         aggregation=AggregationMethod.MEAN,
         inpaint=InpaintMethod.CONV,
+        inpaint_iter=3,
     )
 
     # Backward Warp
     print("Backward warping...")
-    out_backward = warper.backward_warp(src_img_tensor, dst_size=(dst_w, dst_h))
+    # fill_grid_iterを増やすと、より広い隙間も埋められる
+    out_backward = warper.backward_warp(
+        src_img_tensor, dst_size=(dst_w, dst_h), fill_grid_iter=10
+    )
 
     # 保存用に変換
     out_f_np = out_forward.permute(1, 2, 0).byte().cpu().numpy()
@@ -444,7 +452,7 @@ def main():
 
     cv2.imwrite("torch_forward.jpg", out_f_np)
     cv2.imwrite("torch_backward.jpg", out_b_np)
-    print("Done.")
+    print("Done. Check torch_forward.jpg and torch_backward.jpg")
 
 
 if __name__ == "__main__":
