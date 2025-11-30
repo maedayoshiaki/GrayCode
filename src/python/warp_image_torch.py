@@ -139,6 +139,7 @@ class PixelMapWarperTorch:
         inpaint: InpaintMethod = InpaintMethod.NONE,
         inpaint_iter: int = 3,
         crop_rect: Optional[Tuple[int, int, int, int]] = None,
+        output_dtype: Optional[torch.dtype] = None,
     ) -> torch.Tensor:
         """
         Forward warp (Splatting): XY image -> UV image.
@@ -163,6 +164,8 @@ class PixelMapWarperTorch:
         is_batch = src_img.ndim == 4
         if not is_batch:
             src_img = src_img.unsqueeze(0)
+
+        input_dtype = src_img.dtype
 
         B, C, H, W = src_img.shape
         src_img = src_img.to(self.device).float()
@@ -261,8 +264,11 @@ class PixelMapWarperTorch:
             cx, cy, cw, ch = crop_rect
             out_img = out_img[:, :, cy : cy + ch, cx : cx + cw]
 
-        # CPU へ転送
+        # CPU へ転送 & dtype を整える
         out_img_cpu = out_img.cpu()
+
+        target_dtype = output_dtype if output_dtype is not None else input_dtype
+        out_img_cpu = out_img_cpu.to(target_dtype)
 
         return out_img_cpu if is_batch else out_img_cpu.squeeze(0)
 
@@ -276,6 +282,7 @@ class PixelMapWarperTorch:
         inpaint: InpaintMethod = InpaintMethod.NONE,
         inpaint_iter: int = 5,
         return_mask: bool = False,
+        output_dtype: Optional[torch.dtype] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
         Backward warp (Sampling): UV image -> XY image.
@@ -303,6 +310,8 @@ class PixelMapWarperTorch:
         is_batch = uv_img.ndim == 4
         if not is_batch:
             uv_img = uv_img.unsqueeze(0)
+
+        input_dtype = uv_img.dtype
 
         B, C, H_uv, W_uv = uv_img.shape
         uv_img = uv_img.to(self.device).float()
@@ -432,9 +441,12 @@ class PixelMapWarperTorch:
             out_img = out_img.squeeze(0)
             valid_mask_after = valid_mask_after.squeeze(0)
 
-        # CPU へ転送
+        # CPU へ転送 & dtype を整える
         out_img_cpu = out_img.cpu()
         valid_mask_after_cpu = valid_mask_after.cpu()
+
+        target_dtype = output_dtype if output_dtype is not None else input_dtype
+        out_img_cpu = out_img_cpu.to(target_dtype)
 
         if return_mask:
             mask_out = (
