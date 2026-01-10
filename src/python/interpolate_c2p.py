@@ -10,13 +10,25 @@ from scipy.sparse.linalg import LinearOperator, cg
 
 def load_c2p_numpy(
     map_file_path: str,
-) -> np.ndarray:
-    """c2pのnpyを読み込んで (N,4) float32 配列で返す。
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """互換API: c2pのnpyを読み込んで従来形式のリストを返す。
+
+    戻り値: List[((cam_x, cam_y), (proj_x, proj_y))]
+    """
+    arr = load_c2p_numpy_array(map_file_path)
+    return [
+        ((float(cam_x), float(cam_y)), (float(proj_x), float(proj_y)))
+        for cam_x, cam_y, proj_x, proj_y in arr
+    ]
+
+
+def load_c2p_numpy_array(map_file_path: str) -> np.ndarray:
+    """内部用: c2pのnpyを読み込んで (N,4) float32 配列で返す。
 
     互換入力:
-      - decode.py 互換: dtype=object の [[x,y],[u,v]] リスト
-      - 本スクリプト互換: (N,4) 数値配列 [cam_x,cam_y,proj_x,proj_y]
-      - 参考: (H,W,2) 数値配列 [proj_x,proj_y]
+      - decode.py 互換: dtype=object の [[x,y],[u,v]] / ndarray要素
+      - 数値配列: (N,4) [cam_x,cam_y,proj_x,proj_y]
+      - 参考: (H,W,2) [proj_x,proj_y]
     """
     map_data = np.load(map_file_path, allow_pickle=True)
 
@@ -46,24 +58,32 @@ def load_c2p_numpy(
     ):
         raise TypeError("Unsupported c2p numpy format")
 
+    def _as_seq(x):
+        # object配列の要素が np.ndarray で入ってくる場合がある
+        if isinstance(x, np.ndarray):
+            return x.tolist()
+        return x
+
     n = int(map_data.shape[0])
     out = np.empty((n, 4), dtype=np.float32)
 
     # 先頭だけチェック
     for i in range(min(10, n)):
-        item = map_data[i]
+        item = _as_seq(map_data[i])
         if (
             not isinstance(item, (list, tuple))
             or len(item) != 2
-            or not isinstance(item[0], (list, tuple))
+            or not isinstance(_as_seq(item[0]), (list, tuple))
             or len(item[0]) != 2
-            or not isinstance(item[1], (list, tuple))
+            or not isinstance(_as_seq(item[1]), (list, tuple))
             or len(item[1]) != 2
         ):
             raise TypeError(f"map_list[{i}] must be [[x,y],[u,v]]")
 
     for i in range(n):
-        cam_xy, proj_uv = map_data[i]
+        cam_xy, proj_uv = _as_seq(map_data[i])
+        cam_xy = _as_seq(cam_xy)
+        proj_uv = _as_seq(proj_uv)
         out[i, 0] = float(cam_xy[0])
         out[i, 1] = float(cam_xy[1])
         out[i, 2] = float(proj_uv[0])
@@ -71,7 +91,7 @@ def load_c2p_numpy(
     return out
 
 
-def interpolate_c2p_list(
+def interpolate_c2p_array(
     cam_height: int,
     cam_width: int,
     c2p_list: np.ndarray,
@@ -128,6 +148,28 @@ def interpolate_c2p_list(
         out[row, 3] = proj_y_filled[y, :].astype(np.float32, copy=False)
 
     return out
+
+
+def interpolate_c2p_list(
+    cam_height: int,
+    cam_width: int,
+    c2p_list: list[tuple[tuple[float, float], tuple[float, float]]],
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """互換API: 従来形式のリストを受け、従来形式のリストを返す。"""
+
+    # まず (N,4) に正規化して計算
+    arr = np.empty((len(c2p_list), 4), dtype=np.float32)
+    for i, ((cam_x, cam_y), (proj_x, proj_y)) in enumerate(c2p_list):
+        arr[i, 0] = float(cam_x)
+        arr[i, 1] = float(cam_y)
+        arr[i, 2] = float(proj_x)
+        arr[i, 3] = float(proj_y)
+
+    out = interpolate_c2p_array(cam_height, cam_width, arr)
+    return [
+        ((float(cam_x), float(cam_y)), (float(proj_x), float(proj_y)))
+        for cam_x, cam_y, proj_x, proj_y in out
+    ]
 
 
 def _laplacian_fill(data: np.ndarray) -> np.ndarray:
@@ -269,15 +311,16 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     try:
-        c2p_list = load_c2p_numpy(c2p_numpy_filename)
+        # 内部計算は省メモリな (N,4) 配列で扱う
+        c2p_arr = load_c2p_numpy_array(c2p_numpy_filename)
     except Exception as e:
         print(f"Error loading c2p numpy file: {e}")
         return
 
     print(
-        f"Loaded {len(c2p_list)} camera-to-projector correspondences from '{c2p_numpy_filename}'"
+        f"Loaded {len(c2p_arr)} camera-to-projector correspondences from '{c2p_numpy_filename}'"
     )
-    c2p_list_interp = interpolate_c2p_list(cam_height, cam_width, c2p_list)
+    c2p_list_interp = interpolate_c2p_array(cam_height, cam_width, c2p_arr)
 
     # create image for visualization
     vis_image = create_vis_image(
@@ -288,8 +331,17 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Saved visualization image to '{vis_filename}'")
 
     out_filename = os.path.splitext(c2p_numpy_filename)[0] + "_compensated.npy"
-    np.save(out_filename, c2p_list_interp.astype(np.float32, copy=False))
-    print(f"Saved compensated correspondences to '{out_filename}' (float32 Nx4)")
+    # 外部互換性のため従来形式 dtype=object の (N,2,2) で保存
+    n = cam_height * cam_width
+    legacy = np.empty((n, 2, 2), dtype=object)
+    legacy[:, 0, 0] = c2p_list_interp[:, 0].astype(np.float64, copy=False)
+    legacy[:, 0, 1] = c2p_list_interp[:, 1].astype(np.float64, copy=False)
+    legacy[:, 1, 0] = c2p_list_interp[:, 2].astype(np.float64, copy=False)
+    legacy[:, 1, 1] = c2p_list_interp[:, 3].astype(np.float64, copy=False)
+    np.save(out_filename, legacy)
+    print(
+        f"Saved compensated correspondences to '{out_filename}' (legacy object format)"
+    )
 
     with open("result_c2p_compensated.csv", "w", encoding="utf-8") as f:
         f.write("cam_x, cam_y, proj_x, proj_y\n")
