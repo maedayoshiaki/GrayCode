@@ -48,8 +48,8 @@ def run_graycode_pipeline(cfg: GraycodePipelineConfig) -> None:
         "gen_graycode.py",
         str(cfg.proj_height),
         str(cfg.proj_width),
-        str(cfg.height_step),
-        str(cfg.width_step),
+        str(cfg.width_step),  # ← width_step
+        str(cfg.height_step),  # ← height_step
     ]
     print("[1/4] Generating graycode patterns...")
     gen_graycode.main(gen_argv)

@@ -41,14 +41,16 @@ def main(argv: list[str] | None = None) -> tuple[int, int] | None:
     if argv is None:
         argv = sys.argv
 
-    if len(argv) not in (3, 4):
+    # 3個: decode.py H W
+    # 5個: decode.py H W height_step width_step
+    if len(argv) not in (3, 5):
         print_usage()
         return
 
     try:
         proj_height = int(argv[1])
         proj_width = int(argv[2])
-        height_step = int(argv[3]) if len(argv) == 4 else 1
+        height_step = int(argv[3]) if len(argv) == 5 else 1
         width_step = int(argv[4]) if len(argv) == 5 else 1
     except ValueError:
         print("height, width, height_step, width_step は整数で指定してください。")

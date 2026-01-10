@@ -1,7 +1,7 @@
-import sys
-import numpy as np
+from typing import List, Tuple, Optional, Union
+
 import cv2
-from typing import List, Tuple, Literal, Optional
+import numpy as np
 from enum import Enum
 from .interpolate_c2p import load_c2p_numpy
 
@@ -41,7 +41,10 @@ class PixelMapWarper:
 
     def __init__(
         self,
-        pixel_map: List[Tuple[Tuple[float, float], Tuple[float, float]]],
+        pixel_map: Union[
+            List[Tuple[Tuple[float, float], Tuple[float, float]]],
+            np.ndarray,
+        ],
     ):
         """
         Args:
@@ -50,11 +53,51 @@ class PixelMapWarper:
         self.pixel_map = pixel_map
         self._cache_map_bounds()
 
+    def _iter_pixel_map(self):
+        if isinstance(self.pixel_map, np.ndarray):
+            if not (self.pixel_map.ndim == 2 and self.pixel_map.shape[1] == 4):
+                raise TypeError("pixel_map ndarray must have shape (N,4)")
+            for src_x, src_y, dst_x, dst_y in self.pixel_map:
+                yield float(src_x), float(src_y), float(dst_x), float(dst_y)
+        else:
+            for (src_x, src_y), (dst_x, dst_y) in self.pixel_map:
+                yield float(src_x), float(src_y), float(dst_x), float(dst_y)
+
     def _cache_map_bounds(self):
         """マップの範囲をキャッシュ"""
-        if not self.pixel_map:
-            self.src_bounds = (0, 0, 0, 0)
-            self.dst_bounds = (0, 0, 0, 0)
+        if isinstance(self.pixel_map, np.ndarray):
+            if self.pixel_map.size == 0:
+                self.src_bounds = (0, 0, 0, 0)
+                self.dst_bounds = (0, 0, 0, 0)
+                return
+        else:
+            if not self.pixel_map:
+                self.src_bounds = (0, 0, 0, 0)
+                self.dst_bounds = (0, 0, 0, 0)
+                return
+
+        # ここ以降は空ではない前提
+
+        if isinstance(self.pixel_map, np.ndarray):
+            arr = self.pixel_map
+            if not (arr.ndim == 2 and arr.shape[1] == 4):
+                raise TypeError("pixel_map ndarray must have shape (N,4)")
+            src_xs = arr[:, 0]
+            src_ys = arr[:, 1]
+            dst_xs = arr[:, 2]
+            dst_ys = arr[:, 3]
+            self.src_bounds = (
+                float(np.nanmin(src_xs)),
+                float(np.nanmin(src_ys)),
+                float(np.nanmax(src_xs)),
+                float(np.nanmax(src_ys)),
+            )
+            self.dst_bounds = (
+                float(np.nanmin(dst_xs)),
+                float(np.nanmin(dst_ys)),
+                float(np.nanmax(dst_xs)),
+                float(np.nanmax(dst_ys)),
+            )
             return
 
         src_xs = [p[0][0] for p in self.pixel_map]
@@ -112,7 +155,7 @@ class PixelMapWarper:
         # 集約方法に応じた処理
         if aggregation == AggregationMethod.MEAN:
             # 平均を取るために加算とカウント
-            for (src_x, src_y), (dst_x, dst_y) in self.pixel_map:
+            for src_x, src_y, dst_x, dst_y in self._iter_pixel_map():
                 # NaN値をスキップ
                 if (
                     np.isnan(src_x)
@@ -158,7 +201,7 @@ class PixelMapWarper:
             else:
                 dst_img.fill(np.inf)
 
-            for (src_x, src_y), (dst_x, dst_y) in self.pixel_map:
+            for src_x, src_y, dst_x, dst_y in self._iter_pixel_map():
                 # NaN値をスキップ
                 if (
                     np.isnan(src_x)
@@ -214,7 +257,7 @@ class PixelMapWarper:
                     [[] for _ in range(dst_width)] for _ in range(dst_height)
                 ]
 
-            for (src_x, src_y), (dst_x, dst_y) in self.pixel_map:
+            for src_x, src_y, dst_x, dst_y in self._iter_pixel_map():
                 # NaN値をスキップ
                 if (
                     np.isnan(src_x)
@@ -256,7 +299,7 @@ class PixelMapWarper:
 
         elif aggregation in [AggregationMethod.FIRST, AggregationMethod.LAST]:
             # 最初または最後の値
-            for (src_x, src_y), (dst_x, dst_y) in self.pixel_map:
+            for src_x, src_y, dst_x, dst_y in self._iter_pixel_map():
                 # NaN値をスキップ
                 if (
                     np.isnan(src_x)
@@ -343,30 +386,55 @@ class PixelMapWarper:
 
         # リマップ用のマップを作成
         # pixel_mapの要素を入れ替える: ((u,v), (x,y)) として扱う
-        map_dict = {}
-        for (src_x, src_y), (dst_x, dst_y) in self.pixel_map:
-            # NaN値をスキップ
-            if np.isnan(src_x) or np.isnan(src_y) or np.isnan(dst_x) or np.isnan(dst_y):
-                continue
+        map_x = np.full((dst_height, dst_width), -1.0, dtype=np.float32)
+        map_y = np.full((dst_height, dst_width), -1.0, dtype=np.float32)
 
-            # 逆変換なので、dst -> src へのマッピングを作成（ピクセル中心座標系を考慮）
-            map_key = (int(np.floor(src_x)), int(np.floor(src_y)))
-            map_dict[map_key] = (dst_x, dst_y)
+        # ndarray の場合は dict を作らず直接代入して省メモリ
+        if isinstance(self.pixel_map, np.ndarray):
+            arr = self.pixel_map
+            src_x = arr[:, 0]
+            src_y = arr[:, 1]
+            dst_x = arr[:, 2]
+            dst_y = arr[:, 3]
+            valid = (
+                ~np.isnan(src_x)
+                & ~np.isnan(src_y)
+                & ~np.isnan(dst_x)
+                & ~np.isnan(dst_y)
+            )
 
-        # マップ配列を作成
-        map_x = np.zeros((dst_height, dst_width), dtype=np.float32)
-        map_y = np.zeros((dst_height, dst_width), dtype=np.float32)
+            sx = np.floor(src_x[valid]).astype(np.int32)
+            sy = np.floor(src_y[valid]).astype(np.int32)
+            dx = dst_x[valid].astype(np.float32, copy=False) - np.float32(src_offset[0])
+            dy = dst_y[valid].astype(np.float32, copy=False) - np.float32(src_offset[1])
 
-        for y in range(dst_height):
-            for x in range(dst_width):
-                if (x, y) in map_dict:
-                    dst_x, dst_y = map_dict[(x, y)]
-                    map_x[y, x] = dst_x - src_offset[0]
-                    map_y[y, x] = dst_y - src_offset[1]
-                else:
-                    # マッピングが存在しない場合は-1（境界値を使用）
-                    map_x[y, x] = -1
-                    map_y[y, x] = -1
+            in_bounds = (0 <= sx) & (sx < dst_width) & (0 <= sy) & (sy < dst_height)
+            sx = sx[in_bounds]
+            sy = sy[in_bounds]
+            dx = dx[in_bounds]
+            dy = dy[in_bounds]
+
+            map_x[sy, sx] = dx
+            map_y[sy, sx] = dy
+        else:
+            map_dict = {}
+            for (src_x, src_y), (dst_x, dst_y) in self.pixel_map:
+                if (
+                    np.isnan(src_x)
+                    or np.isnan(src_y)
+                    or np.isnan(dst_x)
+                    or np.isnan(dst_y)
+                ):
+                    continue
+                map_key = (int(np.floor(src_x)), int(np.floor(src_y)))
+                map_dict[map_key] = (dst_x, dst_y)
+
+            for y in range(dst_height):
+                for x in range(dst_width):
+                    if (x, y) in map_dict:
+                        dst_x, dst_y = map_dict[(x, y)]
+                        map_x[y, x] = dst_x - src_offset[0]
+                        map_y[y, x] = dst_y - src_offset[1]
 
         # cv2.remapで変換
         dst_img = cv2.remap(

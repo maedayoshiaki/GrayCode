@@ -64,6 +64,9 @@ def main(argv: list[str] | None = None) -> None:
 
     open_cam()
 
+    # キャプチャディレクトリ作成
+    CAPTUREDIR.mkdir(parents=True, exist_ok=True)
+
     for i, pat in enumerate(graycode_imgs):
         print(f"Displaying pattern image {i:02d}...")
         cv2.imshow("Pattern", pat)
