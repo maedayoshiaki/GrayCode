@@ -110,7 +110,9 @@ def main(argv: list[str] | None = None) -> None:
     if argv is None:
         argv = sys.argv
 
-    if not (3 <= len(argv) <= 6):
+    # argv[0] はモジュール/スクリプト名。
+    # 必須2引数 + 任意4引数まで受け付けるので、len(argv) は 3..7。
+    if not (3 <= len(argv) <= 7):
         print(
             "Usage: python -m src.python.pipeline "
             "<proj_height> <proj_width> [height_step] [width_step] [window_pos_x] [window_pos_y]"
