@@ -92,6 +92,7 @@ def run_graycode_pipeline(cfg: GraycodePipelineConfig) -> None:
             "result_c2p.npy",
             str(cam_height),
             str(cam_width),
+            "delaunay",
         ]
         print("[4/4] Interpolating c2p correspondences...")
         interpolate_c2p.main(interp_argv)

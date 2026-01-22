@@ -6,6 +6,14 @@ import sys
 import cv2
 import numpy as np
 
+# 追加: Scipyの補完モジュール
+try:
+    from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+
 
 def load_c2p_numpy(
     map_file_path: str,
@@ -96,6 +104,7 @@ def interpolate_c2p_array(
     c2p_list: np.ndarray,
 ) -> np.ndarray:
     """
+    [Original Method]
     Fill missing correspondences using cv2.inpaint (float32).
     """
     # Initialize maps with NaN
@@ -139,7 +148,7 @@ def interpolate_c2p_array(
         proj_y_map, radius=3.0, method=cv2.INPAINT_TELEA
     )
 
-    # Build output as (N,4) float32 to avoid huge Python object overhead
+    # Build output as (N,4) float32
     out = np.empty((cam_height * cam_width, 4), dtype=np.float32)
     x_coords = np.arange(cam_width, dtype=np.float32)
     for y in range(cam_height):
@@ -148,6 +157,71 @@ def interpolate_c2p_array(
         out[row, 1] = np.float32(y)
         out[row, 2] = proj_x_filled[y, :].astype(np.float32, copy=False)
         out[row, 3] = proj_y_filled[y, :].astype(np.float32, copy=False)
+
+    return out
+
+
+def interpolate_c2p_delaunay(
+    cam_height: int,
+    cam_width: int,
+    c2p_list: np.ndarray,
+) -> np.ndarray:
+    """
+    [New Method]
+    Fill missing correspondences using Scipy's Delaunay Triangulation (LinearNDInterpolator).
+    Fills convex hull exterior with NearestNDInterpolator.
+    """
+    if not SCIPY_AVAILABLE:
+        raise ImportError("scipy is required for delaunay interpolation.")
+
+    print("Running Delaunay Interpolation...")
+
+    if not (
+        isinstance(c2p_list, np.ndarray)
+        and c2p_list.ndim == 2
+        and c2p_list.shape[1] == 4
+    ):
+        raise TypeError("c2p_list must be a NumPy array with shape (N,4)")
+
+    # 1. データのクレンジング (NaN除去)
+    # c2p_list: [cam_x, cam_y, proj_x, proj_y]
+    valid_mask = ~np.isnan(c2p_list).any(axis=1)
+    valid_data = c2p_list[valid_mask]
+
+    if len(valid_data) < 4:
+        raise ValueError("Not enough points for Delaunay triangulation.")
+
+    # 入力点 (Camera Coordinates) と 値 (Projector Coordinates)
+    points = valid_data[:, 0:2]  # cam_x, cam_y
+    values = valid_data[:, 2:4]  # proj_x, proj_y
+
+    # 2. 補完グリッドの作成
+    # カメラ画像の全画素座標を作成
+    grid_y, grid_x = np.mgrid[0:cam_height, 0:cam_width]
+    # (H*W, 2) の形に変形
+    query_points = np.stack((grid_x.ravel(), grid_y.ravel()), axis=1)
+
+    # 3. ドロネー分割による線形補完 (Linear Interpolation)
+    # 凸包の内部を補完します。外部はNaNになります。
+    print("  - Building Delaunay triangulation and interpolating (Linear)...")
+    lin_interp = LinearNDInterpolator(points, values)
+    interpolated_values = lin_interp(query_points)  # shape: (N_pixels, 2)
+
+    # 4. NaN部分（凸包の外側）の処理
+    # ドロネー補完はデータの外側を推論できないため、NaNをNearest Neighborで埋めます。
+    nan_mask = np.isnan(interpolated_values[:, 0])
+    if np.any(nan_mask):
+        print(f"  - Filling {np.sum(nan_mask)} outside points with Nearest Neighbor...")
+        # NearestNDInterpolator は `scipy.spatial.KDTree` を使用します
+        near_interp = NearestNDInterpolator(points, values)
+        interpolated_values[nan_mask] = near_interp(query_points[nan_mask])
+
+    # 5. 結果の整形 (N, 4)
+    out = np.empty((cam_height * cam_width, 4), dtype=np.float32)
+    out[:, 0] = query_points[:, 0].astype(np.float32)  # grid_x
+    out[:, 1] = query_points[:, 1].astype(np.float32)  # grid_y
+    out[:, 2] = interpolated_values[:, 0].astype(np.float32)  # proj_x
+    out[:, 3] = interpolated_values[:, 1].astype(np.float32)  # proj_y
 
     return out
 
@@ -262,10 +336,11 @@ def main(argv: list[str] | None = None) -> None:
     if argv is None:
         argv = sys.argv
 
-    if len(argv) != 4:
+    if len(argv) < 4:
         print(
-            "Usage : python interpolate_c2p.py <c2p_numpy_filename> <cam_height> <cam_width>"
+            "Usage : python interpolate_c2p.py <c2p_numpy_filename> <cam_height> <cam_width> [method]"
         )
+        print("   method: 'inpaint' (default) or 'delaunay'")
         print()
         return
 
@@ -273,11 +348,11 @@ def main(argv: list[str] | None = None) -> None:
         cam_height = int(argv[2])
         cam_width = int(argv[3])
         c2p_numpy_filename = str(argv[1])
+        method = "inpaint"
+        if len(argv) >= 5:
+            method = str(argv[4]).lower()
     except ValueError:
         print("cam_height, cam_width は整数で指定してください。")
-        print(
-            "Usage : python interpolate_c2p.py <c2p_numpy_filename> <cam_height> <cam_width>"
-        )
         print()
         return
 
@@ -291,17 +366,35 @@ def main(argv: list[str] | None = None) -> None:
     print(
         f"Loaded {len(c2p_arr)} camera-to-projector correspondences from '{c2p_numpy_filename}'"
     )
-    c2p_list_interp = interpolate_c2p_array(cam_height, cam_width, c2p_arr)
+    print(f"Target size: {cam_width}x{cam_height}, Method: {method}")
+
+    # メソッド分岐
+    if method == "delaunay":
+        if not SCIPY_AVAILABLE:
+            print(
+                "Error: 'scipy' module is not installed. Please install it with 'pip install scipy'."
+            )
+            return
+        c2p_list_interp = interpolate_c2p_delaunay(cam_height, cam_width, c2p_arr)
+    else:
+        # Default to inpaint
+        if method != "inpaint":
+            print(f"Unknown method '{method}', falling back to 'inpaint'.")
+        c2p_list_interp = interpolate_c2p_array(cam_height, cam_width, c2p_arr)
 
     # create image for visualization
     vis_image = create_vis_image(
         cam_height, cam_width, c2p_list_interp, dtype=np.dtype(np.uint8)
     )
-    vis_filename = os.path.splitext(c2p_numpy_filename)[0] + "_compensated_vis.png"
+    vis_filename = (
+        os.path.splitext(c2p_numpy_filename)[0] + f"_compensated_{method}_vis.png"
+    )
     cv2.imwrite(vis_filename, vis_image)
     print(f"Saved visualization image to '{vis_filename}'")
 
-    out_filename = os.path.splitext(c2p_numpy_filename)[0] + "_compensated.npy"
+    out_filename = (
+        os.path.splitext(c2p_numpy_filename)[0] + f"_compensated_{method}.npy"
+    )
     # 外部互換性のため従来形式 dtype=object の (N,2,2) で保存
     n = cam_height * cam_width
     legacy = np.empty((n, 2, 2), dtype=object)
@@ -314,13 +407,15 @@ def main(argv: list[str] | None = None) -> None:
         f"Saved compensated correspondences to '{out_filename}' (legacy object format)"
     )
 
-    with open("result_c2p_compensated.csv", "w", encoding="utf-8") as f:
+    csv_filename = f"result_c2p_compensated_{method}.csv"
+    with open(csv_filename, "w", encoding="utf-8") as f:
         f.write("cam_x, cam_y, proj_x, proj_y\n")
-        for cam_x, cam_y, proj_x, proj_y in c2p_list_interp:
-            f.write(
-                f"{float(cam_x)}, {float(cam_y)}, {float(proj_x)}, {float(proj_y)}\n"
-            )
-    print("output : './result_c2p_compensated.csv'")
+        # CSV書き出しは少し重いので、最初の10行と全体のサイズのみ表示など簡略化も検討可能ですが
+        # オリジナルの動作に合わせて全書き出しします。
+        for row in c2p_list_interp:
+            f.write(f"{row[0]:.4f}, {row[1]:.4f}, {row[2]:.4f}, {row[3]:.4f}\n")
+
+    print(f"output : './{csv_filename}'")
     print()
 
 
