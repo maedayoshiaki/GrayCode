@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import List, Tuple
 
+from collections import defaultdict
+
 import cv2
 import numpy as np
 
@@ -137,6 +139,31 @@ def main(argv: list[str] | None = None) -> tuple[int, int] | None:
     print("NumPy array : './result_c2p.npy'")
     print("output : './result_c2p.csv'")
     print()
+
+    # --- P2C (Projector → Camera) マップ生成 ---
+    # 同じプロジェクタ座標に複数のカメラ座標が対応する場合も全て保持する
+    p2c_dict: dict[Tuple[float, float], List[Tuple[int, int]]] = defaultdict(list)
+    for (cam_x, cam_y), (proj_x, proj_y) in c2p_list:
+        p2c_dict[(proj_x, proj_y)].append((cam_x, cam_y))
+
+    # CSV保存（1対応1行）
+    with open("result_p2c.csv", "w", encoding="utf-8") as f:
+        f.write("proj_x, proj_y, cam_x, cam_y\n")
+        for (proj_x, proj_y), cam_list in sorted(p2c_dict.items()):
+            for cam_x, cam_y in cam_list:
+                f.write(f"{proj_x}, {proj_y}, {cam_x}, {cam_y}\n")
+
+    # NumPy形式でも保存（辞書をそのまま保持）
+    np.save("result_p2c.npy", np.array(dict(p2c_dict), dtype=object))
+
+    total_correspondences = sum(len(v) for v in p2c_dict.values())
+    print("=== P2C Result ===")
+    print(f"Unique projector pixels : {len(p2c_dict)}")
+    print(f"Total p2c correspondences : {total_correspondences}")
+    print("NumPy dict : './result_p2c.npy'")
+    print("output : './result_p2c.csv'")
+    print()
+
     return (cam_height, cam_width)
 
 
