@@ -7,7 +7,7 @@ from . import gen_graycode
 from . import cap_graycode
 from . import decode
 from . import interpolate_c2p
-from . import warp_image_torch  # まだ自動では呼ばないが import だけしておく
+from . import warp_image  # まだ自動では呼ばないが import だけしておく
 
 
 @dataclass
