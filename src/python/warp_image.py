@@ -1,567 +1,756 @@
-import sys
+"""
+Pixel Map Warper (PyTorch Version)
+
+A GPU-accelerated image warping module using pixel correspondence maps.
+Supports both forward warping (splatting) and backward warping (sampling).
+
+Coordinate Systems:
+    - XY (Camera/Source): Integer coordinates (0,0), (1,0), etc. represent pixel centers
+    - UV (Projector/Destination): Pixel centers are at (0.5, 0.5), (1.5, 0.5), etc.
+
+Usage:
+    >>> warper = PixelMapWarperTorch(pixel_map, device="cuda")
+    >>> # Forward warp: XY image -> UV image
+    >>> uv_img = warper.forward_warp(xy_img, dst_size=(200, 200))
+    >>> # Backward warp: UV image -> XY image
+    >>> xy_img = warper.backward_warp(uv_img, dst_size=(100, 100))
+
+"""
+
+import torch
+import torch.nn.functional as F
 import numpy as np
-import cv2
-from typing import List, Tuple, Literal, Optional
+from typing import List, Tuple, Optional, Union
 from enum import Enum
-from .interpolate_c2p import load_c2p_numpy
+
+from .config import get_config
+
+# ---------------------------------------------------------------------------
+# Constants (loaded from config for tunability, resolved once at import time)
+# ---------------------------------------------------------------------------
+_warp_cfg = get_config().warp
+_EPS = _warp_cfg.advanced.eps
+_LARGE_POS = _warp_cfg.advanced.large_pos
+_LARGE_NEG = _warp_cfg.advanced.large_neg
+_INVALID_COORD = _warp_cfg.advanced.invalid_coord
 
 
 class AggregationMethod(Enum):
-    """複数のピクセルが同じ位置にマップされる場合の集約方法"""
+    """Aggregation method when multiple pixels map to the same location."""
 
-    MEAN = "mean"  # 平均
-    MEDIAN = "median"  # 中央値
-    MAX = "max"  # 最大値
-    MIN = "min"  # 最小値
-    FIRST = "first"  # 最初の値
-    LAST = "last"  # 最後の値
+    MEAN = "mean"  # Average of all values (weighted by splat weights)
+    MAX = "max"  # Maximum value
+    MIN = "min"  # Minimum value
+    LAST = "last"  # Last value (overwrite)
+
+
+class SplatMethod(Enum):
+    """Splatting method for forward warping."""
+
+    NEAREST = "nearest"  # Single pixel (original behavior, causes holes)
+    BILINEAR = "bilinear"  # Bilinear splatting to 4 neighbors (recommended)
 
 
 class InpaintMethod(Enum):
-    """穴埋め補完の方法"""
+    """Inpainting method for filling holes."""
 
-    NONE = "none"  # 補完なし
-    TELEA = "telea"  # Telea のアルゴリズム
-    NS = "ns"  # Navier-Stokes ベースのアルゴリズム
+    NONE = "none"  # No inpainting
+    CONV = "conv"  # Convolution-based inpainting (GPU compatible)
 
 
-class PixelMapWarper:
+class PaddingMode(Enum):
+    """Padding mode for out-of-bounds sampling."""
+
+    ZEROS = "zeros"  # Fill with zeros
+    BORDER = "border"  # Clamp to border values
+    REFLECTION = "reflection"  # Reflect at boundaries
+
+
+class PixelMapWarperTorch:
     """
-    画素対応マップを使用して画像をワーピングするクラス
+    Warps images using pixel correspondence map (PyTorch version).
 
-    マップ形式: List[Tuple[Tuple[float, float], Tuple[float, float]]]
-    各要素: ((x, y), (u, v)) where (x,y)は元画像の座標、(u,v)は変換先の座標
+    The pixel map defines correspondences from XY coordinate system to UV coordinate system:
+        (x, y) -> (u, v)
 
-    主な機能:
-    - 画像とマップの解像度が異なる場合に対応
-    - 順変換(forward warping)と逆変換(backward warping)の両方をサポート
-    - 複数ピクセルが同じ位置にマップされる場合の集約方法を選択可能
-    - 穴埋め補完機能
+    Coordinate System Conventions:
+        - XY (Camera): (0, 0) is the center of pixel (0, 0)
+                       Pixel (i, j) covers the range [i-0.5, i+0.5) x [j-0.5, j+0.5)
+        - UV (Projector): (0.5, 0.5) is the center of pixel (0, 0)
+                          Pixel (i, j) covers the range [i, i+1) x [j, j+1)
+
+    Forward warp transforms an XY image to UV space (splatting).
+    Backward warp transforms a UV image to XY space (sampling).
+
+    Attributes:
+        map_tensor: Pixel correspondence map as tensor (N, 4) [x, y, u, v]
+        xy_bounds: Bounds in XY space (min_x, min_y, max_x, max_y)
+        uv_bounds: Bounds in UV space (min_u, min_v, max_u, max_v)
+        device: Computation device ('cpu' or 'cuda')
     """
 
     def __init__(
         self,
-        pixel_map: List[Tuple[Tuple[float, float], Tuple[float, float]]],
+        pixel_map: Union[
+            List[Tuple[Tuple[float, float], Tuple[float, float]]],
+            np.ndarray,
+            torch.Tensor,
+        ],
+        device: Optional[str] = None,
     ):
         """
-        Args:
-            pixel_map: 画素対応マップ ((x,y), (u,v)) のリスト
-        """
-        self.pixel_map = pixel_map
-        self._cache_map_bounds()
+        Initialize the warper with a pixel correspondence map.
 
-    def _cache_map_bounds(self):
-        """マップの範囲をキャッシュ"""
-        if not self.pixel_map:
-            self.src_bounds = (0, 0, 0, 0)
-            self.dst_bounds = (0, 0, 0, 0)
+        Args:
+            pixel_map: Pixel correspondence map in one of the following formats:
+                - List of tuples: [((src_x, src_y), (dst_x, dst_y)), ...]
+                - NumPy array: shape (N, 4) with columns [src_x, src_y, dst_x, dst_y]
+                - PyTorch tensor: shape (N, 4) with columns [src_x, src_y, dst_x, dst_y]
+            device: Computation device. If None, uses CUDA if available.
+        """
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device
+
+        # Convert input to tensor
+        if isinstance(pixel_map, list):
+            flat_data = [[sx, sy, dx, dy] for (sx, sy), (dx, dy) in pixel_map]
+            self.map_tensor = torch.tensor(
+                flat_data, dtype=torch.float32, device=self.device
+            )
+        elif isinstance(pixel_map, np.ndarray):
+            self.map_tensor = torch.from_numpy(pixel_map).float().to(self.device)
+            if self.map_tensor.ndim == 3 and self.map_tensor.shape[1:] == (2, 2):
+                self.map_tensor = self.map_tensor.view(-1, 4)
+        elif isinstance(pixel_map, torch.Tensor):
+            self.map_tensor = pixel_map.float().to(self.device)
+        else:
+            raise TypeError(f"Unsupported pixel_map type: {type(pixel_map)}")
+
+        # Remove NaN entries
+        mask = ~torch.isnan(self.map_tensor).any(dim=1)
+        self.map_tensor = self.map_tensor[mask]
+
+        self._cache_bounds()
+        self._inpaint_kernels: dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
+
+    def _cache_bounds(self) -> None:
+        """Cache the coordinate bounds of the map."""
+        if self.map_tensor.numel() == 0:
+            self.xy_bounds = (0.0, 0.0, 0.0, 0.0)
+            self.uv_bounds = (0.0, 0.0, 0.0, 0.0)
             return
 
-        src_xs = [p[0][0] for p in self.pixel_map]
-        src_ys = [p[0][1] for p in self.pixel_map]
-        dst_xs = [p[1][0] for p in self.pixel_map]
-        dst_ys = [p[1][1] for p in self.pixel_map]
+        x, y, u, v = self.map_tensor.T
+        self.xy_bounds = (
+            x.min().item(),
+            y.min().item(),
+            x.max().item(),
+            y.max().item(),
+        )
+        self.uv_bounds = (
+            u.min().item(),
+            v.min().item(),
+            u.max().item(),
+            v.max().item(),
+        )
 
-        self.src_bounds = (min(src_xs), min(src_ys), max(src_xs), max(src_ys))
-        self.dst_bounds = (min(dst_xs), min(dst_ys), max(dst_xs), max(dst_ys))
+    # ------------------------------------------------------------------
+    # Coordinate helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _xy_to_pixel(x: torch.Tensor) -> torch.Tensor:
+        """Convert XY coordinate to pixel index. (0,0) is pixel center."""
+        return torch.floor(x + 0.5).long()
+
+    @staticmethod
+    def _uv_to_pixel(u: torch.Tensor) -> torch.Tensor:
+        """Convert UV coordinate to pixel index. (0.5,0.5) is pixel center."""
+        return torch.floor(u).long()
+
+    # ------------------------------------------------------------------
+    # Aggregation helper (shared by nearest / bilinear splatting)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _scatter_aggregate(
+        out: torch.Tensor,
+        weights: torch.Tensor,
+        dst_indices: torch.Tensor,
+        values: torch.Tensor,
+        w: Optional[torch.Tensor],
+        aggregation: AggregationMethod,
+    ) -> None:
+        """
+        Accumulate *values* into *out* at *dst_indices* using *aggregation*.
+
+        For weighted splatting pass *w* (per-pixel weights); for nearest pass None.
+        *weights* is a flat (M,) tensor that tracks per-destination total weight /
+        count and is updated in-place.
+
+        Args:
+            out: (B, C, M) accumulation buffer
+            weights: (M,) weight / count buffer
+            dst_indices: (N,) destination flat indices
+            values: (B, C, N) source pixel values (already weighted if bilinear)
+            w: (N,) per-entry weights, or None for nearest (treated as 1)
+            aggregation: aggregation strategy
+        """
+        B, C, _ = out.shape
+        idx_exp = dst_indices.unsqueeze(0).unsqueeze(0).expand(B, C, -1)
+
+        if w is None:
+            w_add = torch.ones(len(dst_indices), device=out.device)
+        else:
+            w_add = w
+
+        if aggregation == AggregationMethod.MEAN:
+            out.index_add_(2, dst_indices, values)
+            weights.index_add_(0, dst_indices, w_add)
+
+        elif aggregation == AggregationMethod.MAX:
+            out.scatter_reduce_(2, idx_exp, values, reduce="amax", include_self=True)
+            weights.index_add_(0, dst_indices, w_add)
+
+        elif aggregation == AggregationMethod.MIN:
+            out.scatter_reduce_(2, idx_exp, values, reduce="amin", include_self=True)
+            weights.index_add_(0, dst_indices, w_add)
+
+        elif aggregation == AggregationMethod.LAST:
+            out.scatter_(2, idx_exp, values)
+            weights.index_add_(0, dst_indices, w_add)
+
+    @staticmethod
+    def _finalize_aggregation(
+        out: torch.Tensor,
+        weights: torch.Tensor,
+        aggregation: AggregationMethod,
+    ) -> None:
+        """Normalize / clean up *out* after all scatter passes."""
+        if aggregation == AggregationMethod.MEAN:
+            w = weights.view(1, 1, -1)
+            mask = w > 0
+            out.copy_(torch.where(mask, out / (w + _EPS), out))
+        elif aggregation == AggregationMethod.MIN:
+            out[out == _LARGE_POS] = 0
+        elif aggregation == AggregationMethod.MAX:
+            out[out == _LARGE_NEG] = 0
+
+    @staticmethod
+    def _init_fill(aggregation: AggregationMethod) -> float:
+        """Return the initial fill value for the output buffer."""
+        if aggregation == AggregationMethod.MIN:
+            return _LARGE_POS
+        if aggregation == AggregationMethod.MAX:
+            return _LARGE_NEG
+        return 0.0
+
+    # ------------------------------------------------------------------
+    # Forward warp (splatting)
+    # ------------------------------------------------------------------
 
     def forward_warp(
         self,
-        src_img: np.ndarray,
+        src_img: torch.Tensor,
         dst_size: Optional[Tuple[int, int]] = None,
         src_offset: Tuple[int, int] = (0, 0),
-        aggregation: AggregationMethod = AggregationMethod.MEAN,
-        inpaint: InpaintMethod = InpaintMethod.NONE,
-        inpaint_radius: int = 3,
+        splat_method: Optional[SplatMethod] = None,
+        aggregation: Optional[AggregationMethod] = None,
+        inpaint: Optional[InpaintMethod] = None,
+        inpaint_iter: Optional[int] = None,
         crop_rect: Optional[Tuple[int, int, int, int]] = None,
-    ) -> np.ndarray:
+        output_dtype: Optional[torch.dtype] = None,
+        keep_on_device: bool = False,
+    ) -> torch.Tensor:
         """
-        順変換: (x,y) -> (u,v) のマッピングで画像を変換
+        Forward warp (Splatting): XY image -> UV image.
 
         Args:
-            src_img: 入力画像
-            dst_size: 出力画像サイズ (width, height)。Noneの場合はマップから自動計算
-            src_offset: 入力画像のオフセット (offset_x, offset_y)
-            aggregation: 複数ピクセルが同じ位置にマップされる場合の集約方法
-            inpaint: 穴埋め補完の方法
-            inpaint_radius: 穴埋め補完の半径
-            crop_rect: 最終的にトリミングする矩形 (x, y, width, height)
+            src_img: Source image in XY coordinates. Shape: (C, H, W) or (B, C, H, W)
+            dst_size: Output size as (width, height). If None, auto-calculated.
+            src_offset: Offset for source coordinates (x_offset, y_offset).
+            splat_method: Splatting method (NEAREST or BILINEAR). None uses config default.
+            aggregation: Method for handling overlapping pixels. None uses config default.
+            inpaint: Method for filling holes in the output. None uses config default.
+            inpaint_iter: Number of inpainting iterations. None uses config default.
+            crop_rect: Crop region (x, y, width, height) in UV space.
+            output_dtype: Desired output dtype. If None, matches input.
+            keep_on_device: If True, keep the result on the computation device.
 
         Returns:
-            変換後の画像
+            Warped image in UV coordinates. Shape matches input batch format.
         """
+        wcfg = get_config().warp
+        if splat_method is None:
+            splat_method = SplatMethod(wcfg.default_splat_method)
+        if aggregation is None:
+            aggregation = AggregationMethod(wcfg.default_aggregation)
+        if inpaint is None:
+            inpaint = InpaintMethod(wcfg.default_inpaint)
+        if inpaint_iter is None:
+            inpaint_iter = wcfg.default_inpaint_iter_forward
+
+        is_batch = src_img.ndim == 4
+        if not is_batch:
+            src_img = src_img.unsqueeze(0)
+
+        input_dtype = src_img.dtype
+        B, C, H, W = src_img.shape
+        src_img = src_img.to(self.device).float()
+
         if dst_size is None:
-            # マップから出力サイズを計算
-            dst_width = int(self.dst_bounds[2]) + 1
-            dst_height = int(self.dst_bounds[3]) + 1
+            dst_w = int(self.uv_bounds[2]) + 1
+            dst_h = int(self.uv_bounds[3]) + 1
         else:
-            dst_width, dst_height = dst_size
+            dst_w, dst_h = dst_size
 
-        # 出力画像の初期化
-        if len(src_img.shape) == 3:
-            dst_img = np.zeros(
-                (dst_height, dst_width, src_img.shape[2]), dtype=np.float64
-            )
-            count_img = np.zeros(
-                (dst_height, dst_width, src_img.shape[2]), dtype=np.float64
+        if splat_method == SplatMethod.BILINEAR:
+            out_img, count_img = self._forward_warp_bilinear(
+                src_img, dst_w, dst_h, src_offset, aggregation
             )
         else:
-            dst_img = np.zeros((dst_height, dst_width), dtype=np.float64)
-            count_img = np.zeros((dst_height, dst_width), dtype=np.float64)
+            out_img, count_img = self._forward_warp_nearest(
+                src_img, dst_w, dst_h, src_offset, aggregation
+            )
 
-        # 集約方法に応じた処理
-        if aggregation == AggregationMethod.MEAN:
-            # 平均を取るために加算とカウント
-            for (src_x, src_y), (dst_x, dst_y) in self.pixel_map:
-                # NaN値をスキップ
-                if (
-                    np.isnan(src_x)
-                    or np.isnan(src_y)
-                    or np.isnan(dst_x)
-                    or np.isnan(dst_y)
-                ):
-                    continue
+        if inpaint == InpaintMethod.CONV:
+            out_img = self._apply_inpaint_conv(out_img, count_img, inpaint_iter)
 
-                # 元画像の座標を計算（ピクセル中心座標系を考慮）
-                # マップ座標0.5 = ピクセル0の中心 = 画像インデックス0
-                img_x = int(np.floor(src_x)) - src_offset[0]
-                img_y = int(np.floor(src_y)) - src_offset[1]
-
-                # 範囲チェック
-                if (
-                    img_x < 0
-                    or img_x >= src_img.shape[1]
-                    or img_y < 0
-                    or img_y >= src_img.shape[0]
-                ):
-                    continue
-
-                # 出力座標を計算（ピクセル中心座標系を考慮）
-                out_x = int(np.floor(dst_x))
-                out_y = int(np.floor(dst_y))
-
-                if out_x < 0 or out_x >= dst_width or out_y < 0 or out_y >= dst_height:
-                    continue
-
-                # ピクセル値を加算
-                dst_img[out_y, out_x] += src_img[img_y, img_x].astype(np.float64)
-                count_img[out_y, out_x] += 1
-
-            # 平均を計算
-            mask = count_img > 0
-            dst_img[mask] /= count_img[mask]
-
-        elif aggregation in [AggregationMethod.MAX, AggregationMethod.MIN]:
-            # 最大値または最小値
-            if aggregation == AggregationMethod.MAX:
-                dst_img.fill(-np.inf)
-            else:
-                dst_img.fill(np.inf)
-
-            for (src_x, src_y), (dst_x, dst_y) in self.pixel_map:
-                # NaN値をスキップ
-                if (
-                    np.isnan(src_x)
-                    or np.isnan(src_y)
-                    or np.isnan(dst_x)
-                    or np.isnan(dst_y)
-                ):
-                    continue
-
-                # 元画像の座標を計算（ピクセル中心座標系を考慮）
-                img_x = int(np.floor(src_x)) - src_offset[0]
-                img_y = int(np.floor(src_y)) - src_offset[1]
-
-                if (
-                    img_x < 0
-                    or img_x >= src_img.shape[1]
-                    or img_y < 0
-                    or img_y >= src_img.shape[0]
-                ):
-                    continue
-
-                # 出力座標を計算（ピクセル中心座標系を考慮）
-                out_x = int(np.floor(dst_x))
-                out_y = int(np.floor(dst_y))
-
-                if out_x < 0 or out_x >= dst_width or out_y < 0 or out_y >= dst_height:
-                    continue
-
-                pixel_value = src_img[img_y, img_x].astype(np.float64)
-                count_img[out_y, out_x] += 1
-
-                if aggregation == AggregationMethod.MAX:
-                    dst_img[out_y, out_x] = np.maximum(
-                        dst_img[out_y, out_x], pixel_value
-                    )
-                else:
-                    dst_img[out_y, out_x] = np.minimum(
-                        dst_img[out_y, out_x], pixel_value
-                    )
-
-            # 無限大の値を0に戻す
-            mask = count_img == 0
-            dst_img[mask] = 0
-
-        elif aggregation == AggregationMethod.MEDIAN:
-            # 中央値を取るためにリストを保持
-            if len(src_img.shape) == 3:
-                pixel_lists = [
-                    [[] for _ in range(dst_width)] for _ in range(dst_height)
-                ]
-            else:
-                pixel_lists = [
-                    [[] for _ in range(dst_width)] for _ in range(dst_height)
-                ]
-
-            for (src_x, src_y), (dst_x, dst_y) in self.pixel_map:
-                # NaN値をスキップ
-                if (
-                    np.isnan(src_x)
-                    or np.isnan(src_y)
-                    or np.isnan(dst_x)
-                    or np.isnan(dst_y)
-                ):
-                    continue
-
-                # 元画像の座標を計算（ピクセル中心座標系を考慮）
-                img_x = int(np.floor(src_x)) - src_offset[0]
-                img_y = int(np.floor(src_y)) - src_offset[1]
-
-                if (
-                    img_x < 0
-                    or img_x >= src_img.shape[1]
-                    or img_y < 0
-                    or img_y >= src_img.shape[0]
-                ):
-                    continue
-
-                # 出力座標を計算（ピクセル中心座標系を考慮）
-                out_x = int(np.floor(dst_x))
-                out_y = int(np.floor(dst_y))
-
-                if out_x < 0 or out_x >= dst_width or out_y < 0 or out_y >= dst_height:
-                    continue
-
-                pixel_lists[out_y][out_x].append(
-                    src_img[img_y, img_x].astype(np.float64)
-                )
-
-            # 中央値を計算
-            for y in range(dst_height):
-                for x in range(dst_width):
-                    if pixel_lists[y][x]:
-                        dst_img[y, x] = np.median(pixel_lists[y][x], axis=0)
-                        count_img[y, x] = len(pixel_lists[y][x])
-
-        elif aggregation in [AggregationMethod.FIRST, AggregationMethod.LAST]:
-            # 最初または最後の値
-            for (src_x, src_y), (dst_x, dst_y) in self.pixel_map:
-                # NaN値をスキップ
-                if (
-                    np.isnan(src_x)
-                    or np.isnan(src_y)
-                    or np.isnan(dst_x)
-                    or np.isnan(dst_y)
-                ):
-                    continue
-
-                # 元画像の座標を計算（ピクセル中心座標系を考慮）
-                img_x = int(np.floor(src_x)) - src_offset[0]
-                img_y = int(np.floor(src_y)) - src_offset[1]
-
-                if (
-                    img_x < 0
-                    or img_x >= src_img.shape[1]
-                    or img_y < 0
-                    or img_y >= src_img.shape[0]
-                ):
-                    continue
-
-                # 出力座標を計算（ピクセル中心座標系を考慮）
-                out_x = int(np.floor(dst_x))
-                out_y = int(np.floor(dst_y))
-
-                if out_x < 0 or out_x >= dst_width or out_y < 0 or out_y >= dst_height:
-                    continue
-
-                # FIRSTの場合は未設定の場合のみ、LASTの場合は常に上書き
-                if (
-                    aggregation == AggregationMethod.FIRST
-                    and count_img[out_y, out_x] > 0
-                ):
-                    continue
-
-                dst_img[out_y, out_x] = src_img[img_y, img_x].astype(np.float64)
-                count_img[out_y, out_x] += 1
-
-        # 穴埋め補完
-        if inpaint != InpaintMethod.NONE:
-            dst_img = self._apply_inpaint(dst_img, count_img, inpaint, inpaint_radius)
-
-        # uint8に変換
-        dst_img = np.clip(dst_img, 0, 255).astype(np.uint8)
-
-        # トリミング
         if crop_rect is not None:
-            x, y, w, h = crop_rect
-            dst_img = dst_img[y : y + h, x : x + w]
+            cx, cy, cw, ch = crop_rect
+            out_img = out_img[:, :, cy : cy + ch, cx : cx + cw]
 
-        return dst_img
+        target_dtype = output_dtype if output_dtype is not None else input_dtype
+        result = out_img.to(target_dtype)
+        if not keep_on_device:
+            result = result.cpu()
+
+        return result if is_batch else result.squeeze(0)
+
+    def _forward_warp_bilinear(
+        self,
+        src_img: torch.Tensor,
+        dst_w: int,
+        dst_h: int,
+        src_offset: Tuple[int, int],
+        aggregation: AggregationMethod,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Bilinear splatting: distribute each source pixel to 4 destination neighbors."""
+        B, C, H, W = src_img.shape
+
+        src_x = self._xy_to_pixel(self.map_tensor[:, 0]) - src_offset[0]
+        src_y = self._xy_to_pixel(self.map_tensor[:, 1]) - src_offset[1]
+
+        dst_x_f = self.map_tensor[:, 2]
+        dst_y_f = self.map_tensor[:, 3]
+
+        # 4-neighbor pixel indices and bilinear weights
+        x0 = torch.floor(dst_x_f).long()
+        y0 = torch.floor(dst_y_f).long()
+        wx1 = dst_x_f - x0.float()
+        wy1 = dst_y_f - y0.float()
+        wx0 = 1.0 - wx1
+        wy0 = 1.0 - wy1
+
+        neighbors = [
+            (x0, y0, wx0 * wy0),
+            (x0 + 1, y0, wx1 * wy0),
+            (x0, y0 + 1, wx0 * wy1),
+            (x0 + 1, y0 + 1, wx1 * wy1),
+        ]
+
+        src_valid = (src_x >= 0) & (src_x < W) & (src_y >= 0) & (src_y < H)
+
+        M = dst_h * dst_w
+        out_img = torch.full(
+            (B, C, M), self._init_fill(aggregation),
+            device=self.device, dtype=torch.float32,
+        )
+        weight_buf = torch.zeros(M, device=self.device, dtype=torch.float32)
+
+        for dx, dy, w_nb in neighbors:
+            dst_valid = (dx >= 0) & (dx < dst_w) & (dy >= 0) & (dy < dst_h)
+            valid = src_valid & dst_valid
+            if not valid.any():
+                continue
+
+            s_x, s_y = src_x[valid], src_y[valid]
+            d_idx = dy[valid] * dst_w + dx[valid]
+            w = w_nb[valid]
+            vals = src_img[:, :, s_y, s_x] * w.view(1, 1, -1)
+
+            self._scatter_aggregate(out_img, weight_buf, d_idx, vals, w, aggregation)
+
+        self._finalize_aggregation(out_img, weight_buf, aggregation)
+
+        out_img = out_img.view(B, C, dst_h, dst_w)
+        count_img = (weight_buf > 0).float().view(1, 1, dst_h, dst_w)
+        return out_img, count_img
+
+    def _forward_warp_nearest(
+        self,
+        src_img: torch.Tensor,
+        dst_w: int,
+        dst_h: int,
+        src_offset: Tuple[int, int],
+        aggregation: AggregationMethod,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Nearest-neighbor splatting: each source pixel maps to one destination pixel."""
+        B, C, H, W = src_img.shape
+
+        src_x = self._xy_to_pixel(self.map_tensor[:, 0]) - src_offset[0]
+        src_y = self._xy_to_pixel(self.map_tensor[:, 1]) - src_offset[1]
+        dst_x = self._uv_to_pixel(self.map_tensor[:, 2])
+        dst_y = self._uv_to_pixel(self.map_tensor[:, 3])
+
+        valid = (
+            (src_x >= 0) & (src_x < W)
+            & (src_y >= 0) & (src_y < H)
+            & (dst_x >= 0) & (dst_x < dst_w)
+            & (dst_y >= 0) & (dst_y < dst_h)
+        )
+
+        s_x, s_y = src_x[valid], src_y[valid]
+        d_idx = dst_y[valid] * dst_w + dst_x[valid]
+        vals = src_img[:, :, s_y, s_x]
+
+        M = dst_h * dst_w
+        out_img = torch.full(
+            (B, C, M), self._init_fill(aggregation),
+            device=self.device, dtype=torch.float32,
+        )
+        weight_buf = torch.zeros(M, device=self.device, dtype=torch.float32)
+
+        self._scatter_aggregate(out_img, weight_buf, d_idx, vals, None, aggregation)
+        self._finalize_aggregation(out_img, weight_buf, aggregation)
+
+        out_img = out_img.view(B, C, dst_h, dst_w)
+        count_img = (weight_buf > 0).float().view(1, 1, dst_h, dst_w)
+        return out_img, count_img
+
+    # ------------------------------------------------------------------
+    # Backward warp (sampling)
+    # ------------------------------------------------------------------
 
     def backward_warp(
         self,
-        src_img: np.ndarray,
+        uv_img: torch.Tensor,
         dst_size: Optional[Tuple[int, int]] = None,
-        src_offset: Tuple[int, int] = (0, 0),
-        interpolation: int = cv2.INTER_LINEAR,
-        border_mode: int = cv2.BORDER_CONSTANT,
-        border_value: Tuple[int, int, int] = (0, 0, 0),
-        crop_rect: Optional[Tuple[int, int, int, int]] = None,
-    ) -> np.ndarray:
+        src_rect: Optional[Tuple[int, int, int, int]] = None,
+        mode: Optional[str] = None,
+        padding_mode: Optional[PaddingMode] = None,
+        inpaint: Optional[InpaintMethod] = None,
+        inpaint_iter: Optional[int] = None,
+        return_mask: bool = False,
+        output_dtype: Optional[torch.dtype] = None,
+        keep_on_device: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
-        逆変換: (u,v) -> (x,y) のマッピングで画像を変換（cv2.remapを使用）
+        Backward warp (Sampling): UV image -> XY image.
 
         Args:
-            src_img: 入力画像
-            dst_size: 出力画像サイズ (width, height)。Noneの場合はマップから自動計算
-            src_offset: 入力画像のオフセット (offset_x, offset_y)
-            interpolation: 補間方法
-            border_mode: 境界モード
-            border_value: 境界値
-            crop_rect: 最終的にトリミングする矩形 (x, y, width, height)
+            uv_img: Source image in UV coordinates. Shape: (C, H, W) or (B, C, H, W)
+            dst_size: Output size as (width, height) in XY space.
+            src_rect: Region in UV space that uv_img covers, as (u, v, width, height).
+            mode: Interpolation mode ('bilinear' or 'nearest'). None uses config default.
+            padding_mode: How to handle pixels with no correspondence. None uses config default.
+            inpaint: Inpainting method for grid holes. None uses config default.
+            inpaint_iter: Number of inpainting iterations. None uses config default.
+            return_mask: If True, also return a mask of valid pixels.
+            output_dtype: Desired output dtype. If None, matches input.
+            keep_on_device: If True, keep the result on the computation device.
 
         Returns:
-            変換後の画像
+            Warped image in XY coordinates.
+            If return_mask=True, returns tuple (image, mask).
         """
-        if dst_size is None:
-            # マップから出力サイズを計算
-            dst_width = int(self.src_bounds[2]) + 1
-            dst_height = int(self.src_bounds[3]) + 1
-        else:
-            dst_width, dst_height = dst_size
+        wcfg = get_config().warp
+        if mode is None:
+            mode = wcfg.default_backward_mode
+        if padding_mode is None:
+            padding_mode = PaddingMode(wcfg.default_padding_mode)
+        if inpaint is None:
+            inpaint = InpaintMethod(wcfg.default_inpaint)
+        if inpaint_iter is None:
+            inpaint_iter = wcfg.default_inpaint_iter_backward
 
-        # リマップ用のマップを作成
-        # pixel_mapの要素を入れ替える: ((u,v), (x,y)) として扱う
-        map_dict = {}
-        for (src_x, src_y), (dst_x, dst_y) in self.pixel_map:
-            # NaN値をスキップ
-            if np.isnan(src_x) or np.isnan(src_y) or np.isnan(dst_x) or np.isnan(dst_y):
-                continue
+        is_batch = uv_img.ndim == 4
+        if not is_batch:
+            uv_img = uv_img.unsqueeze(0)
 
-            # 逆変換なので、dst -> src へのマッピングを作成（ピクセル中心座標系を考慮）
-            map_key = (int(np.floor(src_x)), int(np.floor(src_y)))
-            map_dict[map_key] = (dst_x, dst_y)
+        input_dtype = uv_img.dtype
+        B, C, H_uv, W_uv = uv_img.shape
+        uv_img = uv_img.to(self.device).float()
 
-        # マップ配列を作成
-        map_x = np.zeros((dst_height, dst_width), dtype=np.float32)
-        map_y = np.zeros((dst_height, dst_width), dtype=np.float32)
+        uv_offset_x, uv_offset_y, uv_w, uv_h = self._parse_src_rect(
+            src_rect, W_uv, H_uv
+        )
+        dst_w, dst_h, xy_offset_x, xy_offset_y = self._parse_dst_size(dst_size)
 
-        for y in range(dst_height):
-            for x in range(dst_width):
-                if (x, y) in map_dict:
-                    dst_x, dst_y = map_dict[(x, y)]
-                    map_x[y, x] = dst_x - src_offset[0]
-                    map_y[y, x] = dst_y - src_offset[1]
-                else:
-                    # マッピングが存在しない場合は-1（境界値を使用）
-                    map_x[y, x] = -1
-                    map_y[y, x] = -1
-
-        # cv2.remapで変換
-        dst_img = cv2.remap(
-            src_img,
-            map_x,
-            map_y,
-            interpolation=interpolation,
-            borderMode=border_mode,
-            borderValue=border_value,
+        # Build sampling grid
+        grid_uv, valid_mask = self._build_sampling_grid(
+            dst_w, dst_h, xy_offset_x, xy_offset_y,
+            uv_offset_x, uv_offset_y, uv_w, uv_h,
+            src_rect is not None,
         )
 
-        # トリミング
-        if crop_rect is not None:
-            x, y, w, h = crop_rect
-            dst_img = dst_img[y : y + h, x : x + w]
+        # Inpaint grid holes
+        if inpaint != InpaintMethod.NONE and inpaint_iter > 0:
+            grid_uv, valid_mask = self._inpaint_grid(
+                grid_uv, valid_mask, inpaint_iter
+            )
 
-        return dst_img
+        # Sample from UV image
+        out_img = self._sample_from_grid(
+            uv_img, grid_uv, valid_mask,
+            uv_offset_x, uv_offset_y, W_uv, H_uv,
+            mode, padding_mode, B, C,
+        )
 
-    def _apply_inpaint(
+        # Output dtype and device
+        target_dtype = output_dtype if output_dtype is not None else input_dtype
+        result = out_img.to(target_dtype)
+        mask_result = valid_mask
+        if not keep_on_device:
+            result = result.cpu()
+            mask_result = mask_result.cpu()
+
+        if not is_batch:
+            result = result.squeeze(0)
+            mask_result = mask_result.squeeze(0)
+
+        if return_mask:
+            if mask_result.shape[-3] == 1 and mask_result.ndim >= 3:
+                mask_result = mask_result.squeeze(-3)
+            return result, mask_result
+        return result
+
+    def _parse_src_rect(
         self,
-        img: np.ndarray,
-        count_img: np.ndarray,
-        method: InpaintMethod,
-        radius: int,
-    ) -> np.ndarray:
-        """
-        穴埋め補完を適用
+        src_rect: Optional[Tuple[int, int, int, int]],
+        W_uv: int,
+        H_uv: int,
+    ) -> Tuple[int, int, int, int]:
+        if src_rect is not None:
+            return src_rect
+        return 0, 0, W_uv, H_uv
 
-        Args:
-            img: 画像
-            count_img: ピクセルのカウント（0のピクセルが穴）
-            method: 補完方法
-            radius: 補完半径
-
-        Returns:
-            補完後の画像
-        """
-        if method == InpaintMethod.NONE:
-            return img
-
-        # マスクを作成（穴の部分を255）
-        if len(count_img.shape) == 3:
-            mask = (count_img[:, :, 0] == 0).astype(np.uint8) * 255
+    def _parse_dst_size(
+        self, dst_size: Optional[Tuple[int, int]]
+    ) -> Tuple[int, int, int, int]:
+        if dst_size is None:
+            dst_w = int(self.xy_bounds[2] - self.xy_bounds[0]) + 1
+            dst_h = int(self.xy_bounds[3] - self.xy_bounds[1]) + 1
+            xy_off_x = int(self.xy_bounds[0])
+            xy_off_y = int(self.xy_bounds[1])
         else:
-            mask = (count_img == 0).astype(np.uint8) * 255
+            dst_w, dst_h = dst_size
+            xy_off_x, xy_off_y = 0, 0
+        return dst_w, dst_h, xy_off_x, xy_off_y
 
-        # 画像をuint8に変換
-        img_uint8 = np.clip(img, 0, 255).astype(np.uint8)
+    def _build_sampling_grid(
+        self,
+        dst_w: int,
+        dst_h: int,
+        xy_off_x: int,
+        xy_off_y: int,
+        uv_off_x: int,
+        uv_off_y: int,
+        uv_w: int,
+        uv_h: int,
+        has_src_rect: bool,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Build a (1, 2, dst_h, dst_w) UV sampling grid and a valid-pixel mask."""
+        x_coords, y_coords, u_coords, v_coords = self.map_tensor.T
 
-        # cv2.inpaintを使用
-        if method == InpaintMethod.TELEA:
-            inpaint_method = cv2.INPAINT_TELEA
-        else:  # InpaintMethod.NS
-            inpaint_method = cv2.INPAINT_NS
+        x_int = self._xy_to_pixel(x_coords) - xy_off_x
+        y_int = self._xy_to_pixel(y_coords) - xy_off_y
 
-        inpainted = cv2.inpaint(img_uint8, mask, radius, inpaint_method)
+        valid = (x_int >= 0) & (x_int < dst_w) & (y_int >= 0) & (y_int < dst_h)
+        if has_src_rect:
+            uv_valid = (
+                (u_coords >= uv_off_x) & (u_coords < uv_off_x + uv_w)
+                & (v_coords >= uv_off_y) & (v_coords < uv_off_y + uv_h)
+            )
+            valid = valid & uv_valid
 
-        return inpainted.astype(np.float64)
+        x_v, y_v = x_int[valid], y_int[valid]
+        u_v, v_v = u_coords[valid], v_coords[valid]
 
+        grid_uv = torch.zeros(
+            (1, 2, dst_h, dst_w), device=self.device, dtype=torch.float32
+        )
+        grid_count = torch.zeros(
+            (1, 1, dst_h, dst_w), device=self.device, dtype=torch.float32
+        )
 
-def main() -> None:
-    # マップデータの読み込み
-    pixel_map = load_c2p_numpy("result_c2p_compensated.npy")
+        if len(x_v) > 0:
+            flat_idx = y_v * dst_w + x_v
+            uv_stack = torch.stack([u_v, v_v], dim=0)
+            g_flat = grid_uv.view(1, 2, -1)
+            c_flat = grid_count.view(1, 1, -1)
 
-    # 画像の読み込み
-    src_img = cv2.imread("input.png")
-    if src_img is None:
-        print("Error: failed to load image 'input.png'")
-        return
+            g_flat.index_add_(2, flat_idx, uv_stack.unsqueeze(0))
+            c_flat.index_add_(
+                2, flat_idx,
+                torch.ones(1, 1, len(flat_idx), device=self.device),
+            )
 
-    # Warperの作成
-    warper = PixelMapWarper(pixel_map)
+            grid_uv = g_flat.view(1, 2, dst_h, dst_w)
+            grid_count = c_flat.view(1, 1, dst_h, dst_w)
 
-    # example offset for cropping
-    OFFSET_X = 1920 // 2 - 500 // 2
-    OFFSET_Y = 1080 // 2 - 500 // 2
+        valid_mask = grid_count > 0
+        grid_uv = torch.where(valid_mask, grid_uv / (grid_count + _EPS), grid_uv)
+        grid_uv = torch.where(
+            valid_mask, grid_uv, torch.full_like(grid_uv, _INVALID_COORD)
+        )
+        return grid_uv, valid_mask
 
-    # 順変換（forward warping）- 複数ピクセルが同じ位置にマップされる場合は平均
-    warped_img = warper.forward_warp(
-        src_img,
-        dst_size=(1920, 1080),  # 出力サイズを指定
-        src_offset=(0, 0),  # 入力画像のオフセット
-        aggregation=AggregationMethod.MEDIAN,  # 中央値を使用
-        inpaint=InpaintMethod.TELEA,  # 穴埋め補完を使用
-        inpaint_radius=1,  # 補完半径
-        crop_rect=(OFFSET_X, OFFSET_Y, 500, 500),  # トリミング
-    )
+    def _inpaint_grid(
+        self,
+        grid_uv: torch.Tensor,
+        valid_mask: torch.Tensor,
+        iterations: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Inpaint holes in the sampling grid and return updated grid + mask."""
+        original_valid = valid_mask.clone()
+        grid_for_inpaint = torch.where(valid_mask, grid_uv, torch.zeros_like(grid_uv))
+        count = valid_mask.float()
+        grid_inpainted = self._apply_inpaint_conv(grid_for_inpaint, count, iterations)
 
-    # 逆変換（backward warping）- cv2.remapを使用
-    inv_warped_img = warper.backward_warp(
-        src_img,
-        #        dst_size=(1920, 1080),
-        src_offset=(0, 0),
-        interpolation=cv2.INTER_LINEAR,
-        # crop_rect=(OFFSET_X, OFFSET_Y, 500, 500),
-    )
+        filled = grid_inpainted.abs().sum(dim=1, keepdim=True) > _EPS
+        grid_uv = torch.where(filled, grid_inpainted, grid_uv)
+        valid_mask = original_valid | filled
+        grid_uv = torch.where(
+            valid_mask, grid_uv, torch.full_like(grid_uv, _INVALID_COORD)
+        )
+        return grid_uv, valid_mask
 
-    # 保存
-    cv2.imwrite("warped.jpg", warped_img)
-    cv2.imwrite("inv_warped.jpg", inv_warped_img)
+    def _sample_from_grid(
+        self,
+        uv_img: torch.Tensor,
+        grid_uv: torch.Tensor,
+        valid_mask: torch.Tensor,
+        uv_off_x: int,
+        uv_off_y: int,
+        W_uv: int,
+        H_uv: int,
+        mode: str,
+        padding_mode: PaddingMode,
+        B: int,
+        C: int,
+    ) -> torch.Tensor:
+        """Sample from *uv_img* using the prebuilt grid."""
+        sample_x = grid_uv[:, 0:1, :, :] - uv_off_x
+        sample_y = grid_uv[:, 1:2, :, :] - uv_off_y
 
+        in_bounds = (
+            (sample_x >= 0) & (sample_x < W_uv)
+            & (sample_y >= 0) & (sample_y < H_uv)
+        )
+        valid_mask = valid_mask & in_bounds
+        sample_x = torch.where(
+            in_bounds, sample_x, torch.full_like(sample_x, _INVALID_COORD)
+        )
+        sample_y = torch.where(
+            in_bounds, sample_y, torch.full_like(sample_y, _INVALID_COORD)
+        )
 
-if __name__ == "__main__":
-    main()
+        norm_x = 2.0 * sample_x / max(W_uv, 1) - 1.0
+        norm_y = 2.0 * sample_y / max(H_uv, 1) - 1.0
+        grid = torch.cat([norm_x, norm_y], dim=1).permute(0, 2, 3, 1)
+        grid_batch = grid.expand(B, -1, -1, -1)
 
+        out_img = F.grid_sample(
+            uv_img,
+            grid_batch,
+            mode=mode,
+            padding_mode=padding_mode.value,
+            align_corners=False,
+        )
 
-"""
-# 異なる集約方法の使用例
-```python
-# 最大値を使用
-warped_max = warper.forward_warp(
-    src_img,
-    aggregation=AggregationMethod.MAX
-)
+        if padding_mode == PaddingMode.ZEROS:
+            out_img = out_img * valid_mask.expand(B, C, -1, -1).float()
 
-# 中央値を使用
-warped_median = warper.forward_warp(
-    src_img,
-    aggregation=AggregationMethod.MEDIAN
-)
+        return out_img
 
-# 最初の値を使用
-warped_first = warper.forward_warp(
-    src_img,
-    aggregation=AggregationMethod.FIRST
-)
-```
+    # ------------------------------------------------------------------
+    # Inpainting
+    # ------------------------------------------------------------------
 
-# 画像とマップの解像度が異なる場合
-```python
-# 例: マップが1920x1080だが、画像が640x480の場合
-# src_offsetで画像がマップのどの位置に対応するかを指定
-warped_img = warper.forward_warp(
-    small_img,
-    dst_size=(1920, 1080),
-    src_offset=(640, 300),  # 画像をマップの(640, 300)の位置に配置
-    aggregation=AggregationMethod.MEAN
-)
-```
+    def _get_inpaint_kernels(
+        self, channels: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return cached 3x3 inpainting kernels for the given channel count."""
+        if channels in self._inpaint_kernels:
+            return self._inpaint_kernels[channels]
 
-# 後方互換性のための従来の関数
-```python
-from warp_image import warp_image, inverse_warp_image
+        base = torch.tensor(
+            [[1, 1, 1], [1, 0, 1], [1, 1, 1]],
+            device=self.device, dtype=torch.float32,
+        )
+        color_kernel = (base / base.sum()).view(1, 1, 3, 3).repeat(channels, 1, 1, 1)
+        weight_kernel = base.view(1, 1, 3, 3)
+        self._inpaint_kernels[channels] = (color_kernel, weight_kernel)
+        return color_kernel, weight_kernel
 
-# 従来のwarp_image関数（cv2.remapベース）
-warped = warp_image(
-    src_img,
-    pixel_map,
-    dst_rect=(100, 100, 500, 500)
-)
+    def _apply_inpaint_conv(
+        self,
+        img: torch.Tensor,
+        count_img: torch.Tensor,
+        iterations: int = 3,
+    ) -> torch.Tensor:
+        """
+        GPU-based inpainting using convolution.
 
-# 従来のinverse_warp_image関数（cv2.remapベース）
-inv_warped = inverse_warp_image(
-    src_img,
-    pixel_map,
-    dst_rect=(100, 100, 500, 500)
-)
-```
-"""
+        Fills empty regions with weighted average of neighboring valid pixels.
+        """
+        C = img.shape[1]
+        kernel, weight_kernel = self._get_inpaint_kernels(C)
 
+        mask = (count_img == 0).float()
+        current_img = img.clone()
+        current_valid = (count_img > 0).float()
 
-# def print_usage() -> None:
-#     print("Usage : python warp_image.py <input image> <output image> <map file>")
-#     print()
+        for _ in range(iterations):
+            is_hole = mask > 0.5
 
+            neighbor_sum = F.conv2d(
+                current_img * current_valid.expand(-1, C, -1, -1),
+                kernel, padding=1, groups=C,
+            )
+            neighbor_weight = F.conv2d(
+                current_valid, weight_kernel, padding=1
+            ).clamp(min=_EPS)
+            neighbor_avg = neighbor_sum / neighbor_weight
 
-# def main(argv: list[str] | None = None) -> None:
-#     if argv is None:
-#         argv = sys.argv
+            current_img = torch.where(is_hole, neighbor_avg, current_img)
+            current_valid = torch.where(
+                is_hole & (neighbor_weight > _EPS),
+                torch.ones_like(current_valid),
+                current_valid,
+            )
+            mask = -F.max_pool2d(-mask, kernel_size=3, stride=1, padding=1)
 
-#     if len(argv) != 4:
-#         print_usage()
-#         return
+        return current_img
 
-#     input_image_path = argv[1]
-#     output_image_path = argv[2]
-#     map_file_path = argv[3]
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
 
-#     # 入力画像の読み込み
-#     src_img = cv2.imread(input_image_path)
+    def get_bounds(self) -> dict:
+        """Get the coordinate bounds of the pixel map."""
+        return {"xy": self.xy_bounds, "uv": self.uv_bounds}
 
-#     # マップデータの読み込み
-#     map_data = np.load(map_file_path, allow_pickle=True)
-#     map_list: List[Tuple[Tuple[float, float], Tuple[float, float]]] = map_data.tolist()
+    def __len__(self) -> int:
+        return len(self.map_tensor)
 
-#     # 画像のワープ
-#     warped_img = inverse_warp_image(
-#         src_img,
-#         map_list,
-#         dst_rect=(1920 // 2 - 500 // 2, 1080 // 2 - 500 // 2, 500, 500),
-#     )
-
-#     # 出力画像の保存
-#     cv2.imwrite(output_image_path, warped_img)
-
-
-# if __name__ == "__main__":
-#     main()
+    def __repr__(self) -> str:
+        return (
+            f"PixelMapWarperTorch("
+            f"n_points={len(self)}, "
+            f"xy_bounds={self.xy_bounds}, "
+            f"uv_bounds={self.uv_bounds}, "
+            f"device='{self.device}')"
+        )
