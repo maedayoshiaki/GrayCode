@@ -4,10 +4,19 @@ from pathlib import Path
 from typing import List
 
 import cv2
-from cv2 import structured_light
 import numpy as np
 
 from .config import get_config, reload_config, split_cli_config_path
+
+
+def _create_graycode_pattern(gc_width: int, gc_height: int):
+    """Create OpenCV GrayCodePattern with a clear error when contrib module is missing."""
+    if not hasattr(cv2, "structured_light"):
+        raise ImportError(
+            "OpenCV structured_light module is not available. "
+            "Install 'opencv-contrib-python'."
+        )
+    return cv2.structured_light.GrayCodePattern.create(gc_width, gc_height)
 
 
 def generate_expanded_patterns(
@@ -17,7 +26,7 @@ def generate_expanded_patterns(
     gc_height = (height - 1) // height_step + 1
     gc_width = (width - 1) // width_step + 1
 
-    graycode = structured_light.GrayCodePattern.create(gc_width, gc_height)
+    graycode = _create_graycode_pattern(gc_width, gc_height)
     _, patterns = graycode.generate()
 
     expanded: List[np.ndarray] = []

@@ -14,6 +14,16 @@ import numpy as np
 from .config import get_config, reload_config, split_cli_config_path
 
 
+def _create_graycode_pattern(gc_width: int, gc_height: int):
+    """Create OpenCV GrayCodePattern with a clear error when contrib module is missing."""
+    if not hasattr(cv2, "structured_light"):
+        raise ImportError(
+            "OpenCV structured_light module is not available. "
+            "Install 'opencv-contrib-python'."
+        )
+    return cv2.structured_light.GrayCodePattern.create(gc_width, gc_height)
+
+
 def print_usage() -> None:
     print(
         "Usage : python decode.py "
@@ -72,7 +82,7 @@ def main(argv: list[str] | None = None) -> tuple[int, int] | None:
     gc_width = ((proj_width - 1) // width_step) + 1
     gc_height = ((proj_height - 1) // height_step) + 1
 
-    graycode = cv2.structured_light.GrayCodePattern.create(gc_width, gc_height)
+    graycode = _create_graycode_pattern(gc_width, gc_height)
     graycode.setBlackThreshold(black_thr)
     graycode.setWhiteThreshold(white_thr)
 

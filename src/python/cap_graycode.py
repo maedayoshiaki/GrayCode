@@ -5,8 +5,6 @@ import sys
 from pathlib import Path
 from typing import List
 
-from edsdk.camera_controller import CameraController
-
 from .config import get_config, reload_config, split_cli_config_path
 
 
@@ -19,6 +17,14 @@ def close_cam() -> None:
 
 
 def capture() -> np.ndarray:
+    try:
+        from edsdk.camera_controller import CameraController
+    except ImportError as e:
+        raise ImportError(
+            "The 'edsdk' module is required for capture. "
+            "Install EDSDK bindings or skip capture in pipeline."
+        ) from e
+
     cam_cfg = get_config().camera
     with CameraController(register_property_events=False) as camera:
         camera.set_properties(
