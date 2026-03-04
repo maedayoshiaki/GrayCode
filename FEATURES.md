@@ -27,7 +27,7 @@ gen_graycode.py
   │  出力: data/graycode_pattern/pattern_00.png ~ pattern_NN.png
   ▼
 cap_graycode.py
-  │  入力: パターン画像群 + カメラ (Canon EOS)
+  │  入力: パターン画像群 + カメラ (backend: edsdk/canon_edsdk/opencv)
   │  出力: data/captured/capture_00.png ~ capture_NN.png
   ▼
 decode.py
@@ -143,18 +143,23 @@ $$\text{img}[y, x] = \text{pat}\!\left[\left\lfloor \frac{y}{h_s} \right\rfloor,
 
 1. `data/graycode_pattern/pattern_*.png` を読み込む
 2. OpenCV のフルスクリーンウィンドウにパターンを表示
-3. **500 ms** 待機（プロジェクタの応答・安定化のため）
-4. Canon EOS カメラで撮影
+3. `camera.wait_key_ms` ミリ秒待機（プロジェクタの応答・安定化のため）
+4. `camera.backend` で指定したカメラ実装で撮影
 
 ### 4.2 カメラ設定
 
-Canon EDSDK を通じて以下のパラメータを設定する：
+`camera.backend` に応じて実装が切り替わる：
+
+- `edsdk` / `canon_edsdk`: Canon EDSDK を使用
+- `opencv`: `cv2.VideoCapture(device_index)` を使用
+
+EDSDK バックエンドでは以下のパラメータを設定する：
 
 | パラメータ | 値 | 説明 |
 |---|---|---|
-| 絞り (AV) | 5 | 被写界深度の確保 |
+| 絞り (AV) | "5" | 被写界深度の確保 |
 | シャッター速度 (TV) | 1/15 秒 | パターンの十分な露光 |
-| ISO 感度 | 100 | ノイズ低減 |
+| ISO 感度 | "100" | ノイズ低減 |
 | 画質 | LJF (Large JPEG Fine) | 高解像度出力 |
 
 ### 4.3 色空間変換

@@ -31,10 +31,12 @@ class PathsConfig:
 
 @dataclass(frozen=True)
 class CameraConfig:
-    av: int = 5
-    tv: float = 1 / 15
-    iso: int = 100
+    backend: str = "edsdk"
+    av: str = "5"
+    tv: str = "1/15"
+    iso: str = "100"
     image_quality: str = "LJF"
+    device_index: int = 0
     wait_key_ms: int = 500
 
 
@@ -128,8 +130,16 @@ def _parse_number(value: object) -> object:
 def _build_section(cls: type, data: dict, key: str):
     """Build a dataclass from a TOML sub-dict, ignoring unknown keys."""
     section = data.get(key, {})
-    valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
-    filtered = {k: _parse_number(v) for k, v in section.items() if k in valid_fields}
+    field_types = {f.name: f.type for f in cls.__dataclass_fields__.values()}
+    filtered = {}
+    for k, v in section.items():
+        if k not in field_types:
+            continue
+        # Keep string-typed fields as-is (e.g. camera.av / camera.iso).
+        if field_types[k] == "str" or field_types[k] is str:
+            filtered[k] = v
+        else:
+            filtered[k] = _parse_number(v)
     return cls(**filtered)
 
 

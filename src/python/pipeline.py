@@ -20,8 +20,8 @@ class GraycodePipelineConfig:
     proj_width: int
 
     # GrayCode のブロックサイズ（gen_graycode / decode で共通利用）
-    width_step: int = 1
     height_step: int = 1
+    width_step: int = 1
 
     # プロジェクタウィンドウを出す位置
     window_pos_x: int = 0
@@ -49,8 +49,8 @@ def run_graycode_pipeline(cfg: GraycodePipelineConfig) -> None:
         "gen_graycode.py",
         str(cfg.proj_height),
         str(cfg.proj_width),
-        str(cfg.width_step),  # ← width_step
         str(cfg.height_step),  # ← height_step
+        str(cfg.width_step),  # ← width_step
     ]
     print("[1/4] Generating graycode patterns...")
     gen_graycode.main(gen_argv)

@@ -60,6 +60,7 @@ def main(argv: list[str] | None = None) -> tuple[int, int] | None:
 
     # 3個: decode.py H W
     # 5個: decode.py H W height_step width_step
+    # gen_graycode.py / pipeline.py と同じ順序で受け取る
     if len(argv) not in (3, 5):
         print_usage()
         return

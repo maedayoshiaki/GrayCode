@@ -5,10 +5,12 @@ pattern_dir = "data/graycode_pattern"
 captured_dir = "data/captured"
 
 [camera]
-av = 5
+backend = "edsdk"            # "edsdk" | "canon_edsdk" | "opencv"
+av = "5"
 tv = "1/15"                # 分数表記・小数どちらも可
-iso = 100
+iso = "100"
 image_quality = "LJF"
+device_index = 0            # OpenCV backend 使用時のカメラインデックス
 wait_key_ms = 500
 
 [decode]
