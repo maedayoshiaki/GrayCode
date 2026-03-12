@@ -5,7 +5,7 @@ pattern_dir = "data/graycode_pattern"
 captured_dir = "data/captured"
 
 [camera]
-backend = "edsdk"            # "edsdk" | "canon_edsdk" | "opencv"
+backend = "canon_edsdk"      # "canon_edsdk" | "opencv" ("edsdk" も互換扱い)
 av = "5"
 tv = "1/15"                # 分数表記・小数どちらも可
 iso = "100"

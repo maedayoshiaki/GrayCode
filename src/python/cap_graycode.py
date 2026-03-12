@@ -1,67 +1,51 @@
-import cv2
-import numpy as np
 import glob
 import sys
 from pathlib import Path
 from typing import List
 
+import cv2
+import numpy as np
+
+from src.python.camera import create_camera_backend
+from src.python.config import CameraConfig as SharedCameraConfig
+
 from .config import get_config, reload_config, split_cli_config_path
 
 
-def _capture_with_edsdk() -> np.ndarray:
-    try:
-        from edsdk.camera_controller import CameraController
-    except ImportError as e:
-        raise ImportError(
-            "The 'edsdk' module is required for capture. "
-            "Install EDSDK bindings or skip capture in pipeline."
-        ) from e
+def _normalize_camera_backend_name(backend: str) -> str:
+    backend_name = backend.strip().lower()
+    if backend_name == "edsdk":
+        return "canon_edsdk"
+    return backend_name
 
+
+def _build_shared_camera_config() -> SharedCameraConfig:
     cam_cfg = get_config().camera
-    with CameraController(register_property_events=False) as camera:
-        camera.set_properties(
-            av=cam_cfg.av,
-            tv=cam_cfg.tv,
-            iso=cam_cfg.iso,
-            image_quality=cam_cfg.image_quality,
-        )
-        imgs = camera.capture_numpy()
-        if not imgs:
-            raise RuntimeError("No image returned from EDSDK camera.")
-        img = imgs[0]
-    return img
+    return SharedCameraConfig(
+        backend=_normalize_camera_backend_name(cam_cfg.backend),
+        av=cam_cfg.av,
+        tv=cam_cfg.tv,
+        iso=cam_cfg.iso,
+        image_quality=cam_cfg.image_quality,
+        device_index=cam_cfg.device_index,
+        wait_key_ms=cam_cfg.wait_key_ms,
+    )
 
 
-def _capture_with_opencv(device_index: int) -> np.ndarray:
-    cap = cv2.VideoCapture(int(device_index))
-    if not cap.isOpened():
-        raise RuntimeError(
-            f"Failed to open camera device_index={device_index} with OpenCV."
-        )
-    try:
-        ok, frame_bgr = cap.read()
-    finally:
-        cap.release()
-
-    if not ok or frame_bgr is None:
-        raise RuntimeError("Failed to capture frame with OpenCV camera.")
-
-    return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+def _linear_to_srgb(linear_rgb: np.ndarray) -> np.ndarray:
+    linear_rgb = np.clip(np.asarray(linear_rgb, dtype=np.float32), 0.0, 1.0)
+    return np.where(
+        linear_rgb <= 0.0031308,
+        12.92 * linear_rgb,
+        1.055 * np.power(linear_rgb, 1.0 / 2.4) - 0.055,
+    )
 
 
 def capture() -> np.ndarray:
-    cam_cfg = get_config().camera
-    backend = str(cam_cfg.backend).strip().lower()
-
-    if backend in ("edsdk", "canon_edsdk"):
-        return _capture_with_edsdk()
-    if backend == "opencv":
-        return _capture_with_opencv(cam_cfg.device_index)
-
-    raise ValueError(
-        f"Unknown camera backend: '{cam_cfg.backend}'. "
-        "Use 'edsdk', 'canon_edsdk', or 'opencv'."
-    )
+    camera = create_camera_backend(_build_shared_camera_config())
+    linear_rgb = camera.capture_linear_rgb()
+    srgb = _linear_to_srgb(linear_rgb)
+    return np.clip(srgb * 255.0, 0.0, 255.0).astype(np.uint8)
 
 
 def print_usage() -> None:

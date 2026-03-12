@@ -31,7 +31,7 @@ class PathsConfig:
 
 @dataclass(frozen=True)
 class CameraConfig:
-    backend: str = "edsdk"
+    backend: str = "canon_edsdk"
     av: str = "5"
     tv: str = "1/15"
     iso: str = "100"
