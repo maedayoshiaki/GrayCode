@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import gen_graycode
 from . import cap_graycode
 from . import decode
 from . import interpolate_c2p
-from . import warp_image  # まだ自動では呼ばないが import だけしておく
+from . import interpolate_p2c
 from .config import get_config, reload_config, split_cli_config_path
 
 
@@ -40,7 +41,8 @@ def run_graycode_pipeline(cfg: GraycodePipelineConfig) -> None:
         1. パターン生成
         2. 投影＆撮影
         3. デコード
-        4. 対応点補間
+        4. C2P 対応点補間
+        5. P2C 対応点補間
     までを順番に実行する高レベルパイプライン関数。
     """
 
@@ -52,7 +54,7 @@ def run_graycode_pipeline(cfg: GraycodePipelineConfig) -> None:
         str(cfg.height_step),  # ← height_step
         str(cfg.width_step),  # ← width_step
     ]
-    print("[1/4] Generating graycode patterns...")
+    print("[1/5] Generating graycode patterns...")
     gen_graycode.main(gen_argv)
 
     # 2. 投影＆撮影
@@ -62,10 +64,10 @@ def run_graycode_pipeline(cfg: GraycodePipelineConfig) -> None:
             str(cfg.window_pos_x),
             str(cfg.window_pos_y),
         ]
-        print("[2/4] Capturing projected patterns...")
+        print("[2/5] Capturing projected patterns...")
         cap_graycode.main(cap_argv)
     else:
-        print("[2/4] Skipped capture (run_capture=False)")
+        print("[2/5] Skipped capture (run_capture=False)")
 
     # 3. デコード（result_c2p.npy / .csv を生成）
     cam_height = 0
@@ -78,17 +80,17 @@ def run_graycode_pipeline(cfg: GraycodePipelineConfig) -> None:
             str(cfg.height_step),
             str(cfg.width_step),
         ]
-        print("[3/4] Decoding captured images...")
+        print("[3/5] Decoding captured images...")
         cam_size = decode.main(dec_argv)
         if cam_size is not None:
             cam_height, cam_width = cam_size
     else:
-        print("[3/4] Skipped decode (run_decode=False)")
+        print("[3/5] Skipped decode (run_decode=False)")
 
-    # 4. 対応点補間（result_c2p_compensated.npy / .csv を生成）
+    app_cfg = get_config().pipeline
+
+    # 4. C2P 対応点補間（result_c2p_compensated.npy / .csv を生成）
     if cfg.run_interpolate and cam_height > 0 and cam_width > 0:
-        # decode.py が出力する既定ファイル名をそのまま使う
-        app_cfg = get_config().pipeline
         interp_argv = [
             "interpolate_c2p.py",
             app_cfg.default_input_file,
@@ -96,10 +98,28 @@ def run_graycode_pipeline(cfg: GraycodePipelineConfig) -> None:
             str(cam_width),
             app_cfg.default_interpolation_method,
         ]
-        print("[4/4] Interpolating c2p correspondences...")
+        print("[4/5] Interpolating c2p correspondences...")
         interpolate_c2p.main(interp_argv)
     else:
-        print("[4/4] Skipped interpolate (run_interpolate=False or invalid cam size)")
+        print("[4/5] Skipped c2p interpolate (run_interpolate=False or invalid cam size)")
+
+    # 5. P2C 対応点補間（result_p2c_compensated_delaunay.npy / .csv を生成）
+    if not cfg.run_interpolate:
+        print("[5/5] Skipped p2c interpolate (run_interpolate=False)")
+    elif not Path(app_cfg.default_p2c_input_file).exists():
+        print(
+            "[5/5] Skipped p2c interpolate "
+            f"(input file not found: {app_cfg.default_p2c_input_file})"
+        )
+    else:
+        interp_p2c_argv = [
+            "interpolate_p2c.py",
+            app_cfg.default_p2c_input_file,
+            str(cfg.proj_height),
+            str(cfg.proj_width),
+        ]
+        print("[5/5] Interpolating p2c correspondences...")
+        interpolate_p2c.main(interp_p2c_argv)
 
     print("Graycode pipeline finished.")
 

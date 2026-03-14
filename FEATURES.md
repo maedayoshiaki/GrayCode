@@ -56,7 +56,7 @@ warp_image.py  (補間済みマップを用いた画像変換)
 
 ## 2. パイプライン制御 (pipeline.py)
 
-4 ステップを順次実行する高レベルオーケストレーション。
+5 ステップを順次実行する高レベルオーケストレーション。
 
 ### 設定 (`GraycodePipelineConfig`)
 
@@ -75,10 +75,11 @@ warp_image.py  (補間済みマップを用いた画像変換)
 ### 実行フロー
 
 ```text
-[1/4] gen_graycode.main()      → パターン画像生成
-[2/4] cap_graycode.main()      → 投影＆撮影 (run_capture=True 時)
-[3/4] decode.main()            → デコード (run_decode=True 時)
-[4/4] interpolate_c2p.main()   → C2P 補間 (run_interpolate=True 時, method="delaunay")
+[1/5] gen_graycode.main()      → パターン画像生成
+[2/5] cap_graycode.main()      → 投影＆撮影 (run_capture=True 時)
+[3/5] decode.main()            → デコード (run_decode=True 時)
+[4/5] interpolate_c2p.main()   → C2P 補間 (run_interpolate=True 時, method="delaunay")
+[5/5] interpolate_p2c.main()   → P2C 補間 (run_interpolate=True 時)
 ```
 
 ---

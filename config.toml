@@ -34,7 +34,8 @@ width_step = 1
 window_pos_x = 3840
 window_pos_y = 0
 default_interpolation_method = "delaunay"
-default_input_file = "result_c2p.npy"
+default_input_file = "result_c2p.npy"          # interpolate_c2p.py の入力
+default_p2c_input_file = "result_p2c.npy"      # interpolate_p2c.py の入力
 
 [warp]
 default_splat_method = "bilinear"    # "bilinear" or "nearest"

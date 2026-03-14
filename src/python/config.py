@@ -69,6 +69,7 @@ class PipelineConfig:
     window_pos_y: int = 0
     default_interpolation_method: str = "delaunay"
     default_input_file: str = "result_c2p.npy"
+    default_p2c_input_file: str = "result_p2c.npy"
 
 
 @dataclass(frozen=True)
