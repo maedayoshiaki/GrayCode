@@ -35,6 +35,50 @@ def load_images(pattern: str) -> List[np.ndarray]:
     return [cv2.imread(f, cv2.IMREAD_GRAYSCALE) for f in filenames]
 
 
+def decode_c2p(
+    bit_imgs: List[np.ndarray],
+    white: np.ndarray,
+    black: np.ndarray,
+    *,
+    proj_height: int,
+    proj_width: int,
+    height_step: int = 1,
+    width_step: int = 1,
+    black_threshold: int,
+    white_threshold: int,
+) -> tuple[List[Tuple[Tuple[int, int], Tuple[float, float]]], Tuple[int, int]]:
+    """Decode in-memory gray-code captures into a camera→projector correspondence.
+
+    Pure (no file I/O) core of :func:`main`, reusable for live calibration.
+    ``bit_imgs`` are the grayscale gray-code bit captures (white/black already
+    removed); ``white``/``black`` are the reference captures. Returns
+    ``(c2p_list, (cam_height, cam_width))`` with ``c2p_list`` =
+    ``[((cam_x, cam_y), (proj_x, proj_y)), ...]`` using the same
+    sub-block-centered projector-coordinate convention as the CLI.
+    """
+    gc_width = ((proj_width - 1) // width_step) + 1
+    gc_height = ((proj_height - 1) // height_step) + 1
+    graycode = cv2.structured_light.GrayCodePattern.create(gc_width, gc_height)
+    graycode.setBlackThreshold(black_threshold)
+    graycode.setWhiteThreshold(white_threshold)
+
+    cam_height, cam_width = white.shape[:2]
+    diff = white.astype(np.int16) - black.astype(np.int16)
+    valid_mask = diff > black_threshold
+    ys, xs = np.where(valid_mask)
+
+    c2p_list: List[Tuple[Tuple[int, int], Tuple[float, float]]] = []
+    for x, y in zip(xs, ys):
+        err, proj_pix = graycode.getProjPixel(bit_imgs, int(x), int(y))
+        if not err:
+            fixed_pix = (
+                width_step * (proj_pix[0] + 0.5),
+                height_step * (proj_pix[1] + 0.5),
+            )
+            c2p_list.append(((int(x), int(y)), fixed_pix))
+    return c2p_list, (cam_height, cam_width)
+
+
 def main(argv: list[str] | None = None) -> tuple[int, int] | None:
     if argv is None:
         argv = sys.argv
