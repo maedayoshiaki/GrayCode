@@ -108,7 +108,7 @@ def main(argv: list[str] | None = None) -> None:
     """
     CLI エントリポイント。
     例:
-        python -m src.python.pipeline 1080 1920 1 1 0 0
+        python -m graycode.pipeline 1080 1920 1 1 0 0
     """
     if argv is None:
         argv = sys.argv
@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> None:
     if len(argv) > 7:
         pcfg = get_config().pipeline
         print(
-            "Usage: python -m src.python.pipeline "
+            "Usage: python -m graycode.pipeline "
             "[proj_height] [proj_width] [height_step] [width_step] "
             "[window_pos_x] [window_pos_y] [--config <config.toml>]"
         )
