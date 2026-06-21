@@ -356,7 +356,7 @@ def main(argv: list[str] | None = None) -> None:
         print(
             "Usage : python interpolate_c2p.py <c2p_numpy_filename> <cam_height> <cam_width> [method] [--config <config.toml>]"
         )
-        print("   method: 'inpaint' (default) or 'delaunay'")
+        print("   method: 'delaunay' or 'inpaint' (省略時は config の default_method)")
         print()
         return
 
@@ -367,7 +367,7 @@ def main(argv: list[str] | None = None) -> None:
         print(
             "Usage : python interpolate_c2p.py <c2p_numpy_filename> <cam_height> <cam_width> [method] [--config <config.toml>]"
         )
-        print("   method: 'inpaint' (default) or 'delaunay'")
+        print("   method: 'delaunay' or 'inpaint' (省略時は config の default_method)")
         print()
         return
 

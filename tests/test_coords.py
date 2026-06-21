@@ -77,6 +77,18 @@ def test_block_center_is_old_uv_center_minus_half() -> None:
             assert coords.block_center(g, step) == step * (g + 0.5) - 0.5
 
 
+def test_block_center_full_clamps_partial_block() -> None:
+    # 端数 (full が step の倍数でない) の最終ブロックは部分的。範囲 [0, full-1] を超えない。
+    # W=10, step=3: reduced_size=4, 最終 g=3 は画素[9]のみを覆う -> 中心 9 (=full-1)
+    assert coords.reduced_size(10, 3) == 4
+    assert coords.block_center(3, 3) == 10.0  # full なしは範囲外
+    assert coords.block_center(3, 3, full=10) == 9.0  # full ありで範囲内 (部分ブロック中心)
+    # W=11, step=3: 最終 g=3 は画素[9,10] を覆う -> 中心 9.5
+    assert coords.block_center(3, 3, full=11) == 9.5
+    # 整除 (W=12, step=3) は full の有無で不変
+    assert coords.block_center(3, 3, full=12) == coords.block_center(3, 3) == 10.0
+
+
 # ── backend: torch テンソルでも同じ規約 ─────────────────────────────
 
 

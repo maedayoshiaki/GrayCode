@@ -73,8 +73,8 @@ def decode_c2p(
         err, proj_pix = graycode.getProjPixel(bit_imgs, int(x), int(y))
         if not err:
             fixed_pix = (
-                coords.block_center(proj_pix[0], width_step),
-                coords.block_center(proj_pix[1], height_step),
+                coords.block_center(proj_pix[0], width_step, proj_width),
+                coords.block_center(proj_pix[1], height_step, proj_height),
             )
             c2p_list.append(((int(x), int(y)), fixed_pix))
     return c2p_list, (cam_height, cam_width)
@@ -168,8 +168,8 @@ def main(argv: list[str] | None = None) -> tuple[int, int] | None:
             # proj_pix[0] は X座標(width方向) なので width_step を掛ける
             # proj_pix[1] は Y座標(height方向) なので height_step を掛ける
             fixed_pix = (
-                coords.block_center(proj_pix[0], width_step),
-                coords.block_center(proj_pix[1], height_step),
+                coords.block_center(proj_pix[0], width_step, proj_width),
+                coords.block_center(proj_pix[1], height_step, proj_height),
             )
 
             viz_c2p[y, x, :] = [

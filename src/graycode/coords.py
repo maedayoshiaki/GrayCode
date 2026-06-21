@@ -104,16 +104,24 @@ def block_of(pixel, step: int):
     return pixel // step
 
 
-def block_center(g, step: int):
+def block_center(g, step: int, full: int | None = None):
     """縮小グレイコード座標 ``g`` → ブロック中心の座標 (pixel-is-point)。
 
-    ``step * g + (step - 1) / 2``。decode が記録するプロジェクタ座標 (GT) の定義。
-    ブロック g は全解像度画素 [step*g, step*g+step-1] を覆い、その中心が
-    step*g + (step-1)/2 (整数=画素中心 規約)。
+    decode が記録するプロジェクタ座標 (GT) の定義。ブロック g は全解像度画素
+    [step*g, step*g+step-1] を覆い、その中心が ``step*g + (step-1)/2``
+    (整数=画素中心 規約)。
 
     - step=1: g （画素 g の中心、デコード値そのもの）。
     - step が奇数: 整数 (ブロック中央の画素中心)。
     - step が偶数: 半整数 (隣り合う2画素中心の中間)。いずれも pixel-is-point 座標
       として正しい点推定 (一様照射ブロックの幾何中心)。
+
+    ``full`` (全解像度) を与えると、最終ブロックが部分的 (full が step の倍数でない)
+    な場合に、実際に覆う画素 [step*g, min(step*g+step, full)-1] の中心を返し、
+    座標が [0, full-1] を超えないようにする。full=None なら従来式 (上記)。
     """
-    return step * g + (step - 1) / 2
+    lo = step * g
+    hi = lo + step - 1
+    if full is not None:
+        hi = np.minimum(hi, full - 1)
+    return (lo + hi) / 2

@@ -17,8 +17,8 @@ white_threshold = 5
 
 [interpolate_c2p]
 inpaint_radius = 3.0
-inpaint_method = "TELEA"       # "TELEA" or "NS"
-default_method = "inpaint"     # "inpaint" or "delaunay"
+inpaint_method = "TELEA"       # "TELEA" or "NS" (inpaint 法を選んだ場合のみ)
+default_method = "delaunay"    # "delaunay" (推奨) or "inpaint"。穴埋め手法の単一の真実源
 csv_precision = 4
 
 [interpolate_p2c]
@@ -31,7 +31,7 @@ height_step = 1
 width_step = 1
 window_pos_x = 0
 window_pos_y = 0
-default_interpolation_method = "delaunay"
+# 補間手法は [interpolate_c2p].default_method を単一の真実源とする (M3)
 default_input_file = "result_c2p.npy"
 
 [warp]

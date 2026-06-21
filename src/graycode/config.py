@@ -48,7 +48,10 @@ class DecodeConfig:
 class InterpolateC2PConfig:
     inpaint_radius: float = 3.0
     inpaint_method: str = "TELEA"  # "TELEA" or "NS"
-    default_method: str = "inpaint"  # "inpaint" or "delaunay"
+    # 既定の穴埋め手法。delaunay は重心(アフィン)補間で既知点を厳密保持し、
+    # 凸包内で線形場を厳密復元する。inpaint(Telea) はチャネル独立拡散のため
+    # 大欠損で幾何が歪む(局所反転)ことがあるため既定にしない。
+    default_method: str = "delaunay"  # "delaunay" or "inpaint"
     csv_precision: int = 4
 
 
@@ -65,7 +68,7 @@ class PipelineConfig:
     width_step: int = 1
     window_pos_x: int = 0
     window_pos_y: int = 0
-    default_interpolation_method: str = "delaunay"
+    # 補間手法は interpolate_c2p.default_method を単一の真実源とする (M3)。
     default_input_file: str = "result_c2p.npy"
 
 
