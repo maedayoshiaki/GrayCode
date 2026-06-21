@@ -11,13 +11,15 @@ pixel-is-point 中心 ``step*g+(step-1)/2`` に変えたことに対応し、差
   - result_p2c.npy          : 0-d object dict {(px,py): [(cx,cy), ...]}
   - result_*_compensated_delaunay.npy (p2c): (N,4) float [proj,proj,cam,cam]
   - result_c2p_compensated_*.npy           : dtype=object (N,2,2)
+  - .npz                    : {p2c: (N,4)[proj,proj,cam,cam], proj_size, ...}
+                              (2dsr-prc ProjectorCameraMap.save 形式)
   - 各 .csv                 : ヘッダの proj_x / proj_y 列を検出して減算
 
 非破壊。入力 ``foo.npy`` に対し ``foo_pixelpoint.npy`` を出力する
 (再実行で二重適用しないよう、元ファイルは書き換えない)。
 
 CLI:
-    uv run python -m graycode.migrate result_c2p.npy result_p2c.npy result_p2c.csv
+    uv run python -m graycode.migrate result_c2p.npy result_p2c.npy p2c.npz result_p2c.csv
 """
 
 from __future__ import annotations
@@ -142,14 +144,34 @@ def migrate_csv(in_path: str, out_path: str, delta: float = PROJ_DELTA) -> str:
     return f"csv: columns {proj_idx} ({[header[i] for i in proj_idx]}) shifted"
 
 
+def migrate_npz(in_path: str, out_path: str, delta: float = PROJ_DELTA) -> str:
+    """``p2c`` 配列を持つ .npz を移行する (2dsr-prc ProjectorCameraMap.save 形式)。
+
+    ``p2c`` は (N,4)[proj_x, proj_y, cam_x, cam_y]。proj 列のみ delta シフトし、
+    ``proj_size`` など他のキーはそのまま保持して再保存する。
+    """
+    with np.load(in_path, allow_pickle=True) as data:
+        if "p2c" not in data.files:
+            raise ValueError(f".npz has no 'p2c' array (keys: {data.files})")
+        p2c = np.asarray(data["p2c"], dtype=np.float32).reshape(-1, 4).copy()
+        others = {k: np.asarray(data[k]) for k in data.files if k != "p2c"}
+
+    p2c[:, 0:2] += delta  # proj_x, proj_y
+    np.savez(out_path, p2c=p2c, **others)
+    kept = ", ".join(others) or "(none)"
+    return f"npz: p2c proj cols 0,1 shifted; preserved keys: {kept}"
+
+
 def migrate_file(in_path: str, delta: float = PROJ_DELTA) -> str:
-    """拡張子で .npy/.csv を振り分け、<stem>_pixelpoint<suffix> に出力する。"""
+    """拡張子で .npy/.csv/.npz を振り分け、<stem>_pixelpoint<suffix> に出力する。"""
     p = Path(in_path)
     out = p.with_name(f"{p.stem}_pixelpoint{p.suffix}")
     if p.suffix == ".npy":
         desc = migrate_npy(str(p), str(out), delta)
     elif p.suffix == ".csv":
         desc = migrate_csv(str(p), str(out), delta)
+    elif p.suffix == ".npz":
+        desc = migrate_npz(str(p), str(out), delta)
     else:
         raise ValueError(f"Unsupported file type: {p.suffix}")
     print(f"  {p.name} -> {out.name}  [{desc}]")
@@ -162,7 +184,7 @@ def main(argv: list[str] | None = None) -> None:
     files = argv[1:]
     if not files:
         print(
-            "Usage: python -m graycode.migrate <file.npy|file.csv> [...]\n"
+            "Usage: python -m graycode.migrate <file.npy|file.csv|file.npz> [...]\n"
             "  旧 UV 規約のファイルを pixel-is-point 規約へ移行 (proj 座標 -0.5)。\n"
             "  各入力に対し <stem>_pixelpoint<suffix> を出力 (非破壊)。"
         )
