@@ -27,6 +27,9 @@ _DEFAULT_CONFIG_PATH = _PROJECT_ROOT / "config.toml"
 class PathsConfig:
     pattern_dir: str = "data/graycode_pattern"
     captured_dir: str = "data/captured"
+    # decode / interpolate / gen_p2c が結果ファイルを書き出すディレクトリ。
+    # 既定 "." は従来どおり CWD。実験ごとに分けると上書き混線を避けられる (M6)。
+    output_dir: str = "."
 
 
 @dataclass(frozen=True)
@@ -196,6 +199,18 @@ def reload_config(config_path: Optional[Path] = None) -> AppConfig:
     global _config
     _config = load_config(config_path)
     return _config
+
+
+def resolve_output_path(name: str, config: Optional[AppConfig] = None) -> Path:
+    """出力ファイル名を ``paths.output_dir`` 配下に解決し、ディレクトリを作成して返す。
+
+    全スクリプト (decode / interpolate_c2p / interpolate_p2c / gen_p2c_from_c2p) の
+    結果書き出しはこの関数を経由する (M6: 出力先の単一の真実源)。
+    """
+    cfg = config if config is not None else get_config()
+    out_dir = Path(cfg.paths.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / name
 
 
 def split_cli_config_path(argv: Sequence[str]) -> tuple[list[str], Optional[Path]]:

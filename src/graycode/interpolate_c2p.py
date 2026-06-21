@@ -15,7 +15,12 @@ except ImportError:
     SCIPY_AVAILABLE = False
 
 from . import coords
-from .config import get_config, reload_config, split_cli_config_path
+from .config import (
+    get_config,
+    reload_config,
+    resolve_output_path,
+    split_cli_config_path,
+)
 
 _INPAINT_METHOD_MAP = {
     "TELEA": cv2.INPAINT_TELEA,
@@ -176,11 +181,15 @@ def interpolate_c2p_delaunay(
     cam_height: int,
     cam_width: int,
     c2p_list: np.ndarray,
-) -> np.ndarray:
+    return_mask: bool = False,
+):
     """
     [New Method]
     Fill missing correspondences using Scipy's Delaunay Triangulation (LinearNDInterpolator).
     Fills convex hull exterior with NearestNDInterpolator.
+
+    return_mask=True のとき (out, extrapolated) を返す。extrapolated は (H*W,) bool で、
+    凸包の外側 (NearestND で外挿された = 信頼度の低い) 画素が True (M2)。
     """
     if not SCIPY_AVAILABLE:
         raise ImportError("scipy is required for delaunay interpolation.")
@@ -236,6 +245,8 @@ def interpolate_c2p_delaunay(
     out[:, 2] = interpolated_values[:, 0].astype(np.float32)  # proj_x
     out[:, 3] = interpolated_values[:, 1].astype(np.float32)  # proj_y
 
+    if return_mask:
+        return out, nan_mask
     return out
 
 
@@ -397,32 +408,41 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Target size: {cam_width}x{cam_height}, Method: {method}")
 
     # メソッド分岐
+    extrapolated = None
     if method == "delaunay":
         if not SCIPY_AVAILABLE:
             print(
                 "Error: 'scipy' module is not installed. Please install it with 'pip install scipy'."
             )
             return
-        c2p_list_interp = interpolate_c2p_delaunay(cam_height, cam_width, c2p_arr)
+        c2p_list_interp, extrapolated = interpolate_c2p_delaunay(
+            cam_height, cam_width, c2p_arr, return_mask=True
+        )
     else:
         # Default to inpaint
         if method != "inpaint":
             print(f"Unknown method '{method}', falling back to 'inpaint'.")
         c2p_list_interp = interpolate_c2p_array(cam_height, cam_width, c2p_arr)
 
+    base = os.path.splitext(os.path.basename(c2p_numpy_filename))[0]
+
     # create image for visualization
     vis_image = create_vis_image(
         cam_height, cam_width, c2p_list_interp, dtype=np.dtype(np.uint8)
     )
-    vis_filename = (
-        os.path.splitext(c2p_numpy_filename)[0] + f"_compensated_{method}_vis.png"
-    )
-    cv2.imwrite(vis_filename, vis_image)
-    print(f"Saved visualization image to '{vis_filename}'")
+    vis_path = resolve_output_path(f"{base}_compensated_{method}_vis.png")
+    cv2.imwrite(str(vis_path), vis_image)
+    print(f"Saved visualization image to '{vis_path}'")
 
-    out_filename = (
-        os.path.splitext(c2p_numpy_filename)[0] + f"_compensated_{method}.npy"
-    )
+    # 凸包外 (Nearest 外挿) 画素のマスクを保存 (M2: 補間値と外挿値を区別する)
+    if extrapolated is not None:
+        mask_path = resolve_output_path(f"{base}_compensated_{method}_extrapolated.png")
+        mask_img = extrapolated.reshape(cam_height, cam_width).astype(np.uint8) * 255
+        cv2.imwrite(str(mask_path), mask_img)
+        frac = 100.0 * float(np.count_nonzero(extrapolated)) / extrapolated.size
+        print(f"Saved extrapolation mask to '{mask_path}' ({frac:.1f}% extrapolated)")
+
+    out_path = resolve_output_path(f"{base}_compensated_{method}.npy")
     # 外部互換性のため従来形式 dtype=object の (N,2,2) で保存
     n = cam_height * cam_width
     legacy = np.empty((n, 2, 2), dtype=object)
@@ -430,14 +450,12 @@ def main(argv: list[str] | None = None) -> None:
     legacy[:, 0, 1] = c2p_list_interp[:, 1].astype(np.float64, copy=False)
     legacy[:, 1, 0] = c2p_list_interp[:, 2].astype(np.float64, copy=False)
     legacy[:, 1, 1] = c2p_list_interp[:, 3].astype(np.float64, copy=False)
-    np.save(out_filename, legacy)
-    print(
-        f"Saved compensated correspondences to '{out_filename}' (legacy object format)"
-    )
+    np.save(out_path, legacy)
+    print(f"Saved compensated correspondences to '{out_path}' (legacy object format)")
 
-    csv_filename = f"result_c2p_compensated_{method}.csv"
+    csv_path = resolve_output_path(f"result_c2p_compensated_{method}.csv")
     precision = get_config().interpolate_c2p.csv_precision
-    with open(csv_filename, "w", encoding="utf-8") as f:
+    with open(csv_path, "w", encoding="utf-8") as f:
         f.write("cam_x, cam_y, proj_x, proj_y\n")
         for row in c2p_list_interp:
             f.write(
@@ -445,7 +463,7 @@ def main(argv: list[str] | None = None) -> None:
                 f"{row[2]:.{precision}f}, {row[3]:.{precision}f}\n"
             )
 
-    print(f"output : './{csv_filename}'")
+    print(f"output : '{csv_path}'")
     print()
 
 

@@ -3,6 +3,7 @@
 [paths]
 pattern_dir = "data/graycode_pattern"
 captured_dir = "data/captured"
+output_dir = "."          # decode/interpolate/gen_p2c の結果出力先 (既定 = CWD)
 
 [camera]
 av = 5

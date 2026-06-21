@@ -5,6 +5,8 @@ from typing import List, Tuple
 
 import numpy as np
 
+from .config import resolve_output_path
+
 
 def gen_p2c_from_c2p(c2p_path: str = "result_c2p.npy") -> None:
     """C2Pマップを読み込み、逆引きのP2Cマップを生成・保存する."""
@@ -16,7 +18,7 @@ def gen_p2c_from_c2p(c2p_path: str = "result_c2p.npy") -> None:
         p2c_dict[(proj_x, proj_y)].append((int(cam_x), int(cam_y)))
 
     # CSV 保存
-    csv_path = "result_p2c.csv"
+    csv_path = resolve_output_path("result_p2c.csv")
     with open(csv_path, "w", encoding="utf-8") as f:
         f.write("proj_x, proj_y, cam_x, cam_y\n")
         for (proj_x, proj_y), cam_list in sorted(p2c_dict.items()):
@@ -24,7 +26,7 @@ def gen_p2c_from_c2p(c2p_path: str = "result_c2p.npy") -> None:
                 f.write(f"{proj_x}, {proj_y}, {cam_x}, {cam_y}\n")
 
     # NumPy 形式で保存
-    npy_path = "result_p2c.npy"
+    npy_path = resolve_output_path("result_p2c.npy")
     np.save(npy_path, np.array(dict(p2c_dict), dtype=object))
 
     total_correspondences = sum(len(v) for v in p2c_dict.values())

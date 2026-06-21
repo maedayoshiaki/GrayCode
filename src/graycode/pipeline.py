@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import gen_graycode
 from . import cap_graycode
@@ -87,13 +88,15 @@ def run_graycode_pipeline(cfg: GraycodePipelineConfig) -> None:
 
     # 4. 対応点補間（result_c2p_compensated.npy / .csv を生成）
     if cfg.run_interpolate and cam_height > 0 and cam_width > 0:
-        # decode.py が出力する既定ファイル名をそのまま使う
+        # decode.py が出力する既定ファイル名をそのまま使う (output_dir 配下, M6)
         app_cfg = get_config().pipeline
+        out_dir = get_config().paths.output_dir
+        input_path = str(Path(out_dir) / app_cfg.default_input_file)
         # 補間手法は interpolate_c2p.default_method を単一の真実源とする (M3)
         method = get_config().interpolate_c2p.default_method
         interp_argv = [
             "interpolate_c2p.py",
-            app_cfg.default_input_file,
+            input_path,
             str(cam_height),
             str(cam_width),
             method,
