@@ -108,6 +108,7 @@ def run_calibration(
     black_threshold: Optional[int] = None,
     white_threshold: Optional[int] = None,
     display_fn: Optional[DisplayFn] = None,
+    debug_dir: Optional[str] = None,
 ) -> np.ndarray:
     """Run a full in-memory gray-code calibration and return the p2c map.
 
@@ -117,8 +118,10 @@ def run_calibration(
     (the format :func:`graycode.interpolate_p2c.load_p2c_numpy_array` and
     :class:`graycode.warp_image.PixelMapWarperTorch` accept).
 
-    No files are written. Thresholds default to the active config's decode
-    section.
+    No files are written unless ``debug_dir`` is given, in which case the raw
+    gray-code captures / white / black / valid mask are saved there (for later
+    visualization with ``scripts/visualize_graycode.py``). Thresholds default to
+    the active config's decode section.
     """
     decode_cfg = get_config().decode
     bthr = decode_cfg.black_threshold if black_threshold is None else black_threshold
@@ -144,6 +147,7 @@ def run_calibration(
         width_step=width_step,
         black_threshold=bthr,
         white_threshold=wthr,
+        debug_dir=debug_dir,
     )
     return np.array(
         [[px, py, cx, cy] for (cx, cy), (px, py) in c2p_list], dtype=np.float32

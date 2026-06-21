@@ -41,6 +41,28 @@ def load_images(pattern: str) -> List[np.ndarray]:
     return [cv2.imread(f, cv2.IMREAD_GRAYSCALE) for f in filenames]
 
 
+def save_decode_debug(
+    debug_dir: str | Path,
+    bit_imgs: List[np.ndarray],
+    white: np.ndarray,
+    black: np.ndarray,
+    valid_mask: np.ndarray,
+) -> None:
+    """撮影グレイコード・白黒参照・有効画素マスクを ``debug_dir`` に保存する。
+
+    in-memory のライブ校正でも生キャプチャと投影範囲マスクを後から可視化できるよう、
+    decode の入力をそのまま書き出す (capture_NN.png / white.png / black.png /
+    valid_mask.png)。可視化は ``scripts/visualize_graycode.py`` 参照。
+    """
+    d = Path(debug_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    for i, img in enumerate(bit_imgs):
+        cv2.imwrite(str(d / f"capture_{i:02d}.png"), img)
+    cv2.imwrite(str(d / "white.png"), white)
+    cv2.imwrite(str(d / "black.png"), black)
+    cv2.imwrite(str(d / "valid_mask.png"), (valid_mask.astype(np.uint8) * 255))
+
+
 def decode_c2p(
     bit_imgs: List[np.ndarray],
     white: np.ndarray,
@@ -52,6 +74,7 @@ def decode_c2p(
     width_step: int = 1,
     black_threshold: int,
     white_threshold: int,
+    debug_dir: str | Path | None = None,
 ) -> tuple[List[Tuple[Tuple[int, int], Tuple[float, float]]], Tuple[int, int]]:
     """Decode in-memory gray-code captures into a camera→projector correspondence.
 
@@ -61,6 +84,9 @@ def decode_c2p(
     ``(c2p_list, (cam_height, cam_width))`` with ``c2p_list`` =
     ``[((cam_x, cam_y), (proj_x, proj_y)), ...]`` using the same
     sub-block-centered projector-coordinate convention as the CLI.
+
+    If ``debug_dir`` is given, the raw captures / white / black / valid mask are
+    written there (via :func:`save_decode_debug`) for later visualization.
     """
     gc_width = coords.reduced_size(proj_width, width_step)
     gc_height = coords.reduced_size(proj_height, height_step)
@@ -71,6 +97,8 @@ def decode_c2p(
     cam_height, cam_width = white.shape[:2]
     diff = white.astype(np.int16) - black.astype(np.int16)
     valid_mask = diff > black_threshold
+    if debug_dir is not None:
+        save_decode_debug(debug_dir, bit_imgs, white, black, valid_mask)
     ys, xs = np.where(valid_mask)
 
     c2p_list: List[Tuple[Tuple[int, int], Tuple[float, float]]] = []
@@ -82,6 +110,10 @@ def decode_c2p(
                 coords.block_center(proj_pix[1], height_step, proj_height),
             )
             c2p_list.append(((int(x), int(y)), fixed_pix))
+    if debug_dir is not None:
+        # 生(穴埋め前)の c2p も保存 → 可視化で「穴埋めなし」プロジェクタ視点や
+        # densify 済みカメラ視点の元データに使える。
+        np.save(Path(debug_dir) / "result_c2p.npy", np.array(c2p_list, dtype=object))
     return c2p_list, (cam_height, cam_width)
 
 
