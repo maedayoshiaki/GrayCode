@@ -4,15 +4,20 @@ Pixel Map Warper (PyTorch Version)
 A GPU-accelerated image warping module using pixel correspondence maps.
 Supports both forward warping (splatting) and backward warping (sampling).
 
-Coordinate Systems:
-    - XY (Camera/Source): Integer coordinates (0,0), (1,0), etc. represent pixel centers
-    - UV (Projector/Destination): Pixel centers are at (0.5, 0.5), (1.5, 0.5), etc.
+Coordinate convention (pixel-is-point, single convention):
+    Both source ("XY", camera) and destination ("UV", projector) images use the
+    SAME convention: integer coordinate i is the CENTER of pixel i (pixel i covers
+    [i-0.5, i+0.5)). This matches OpenCV / numpy. The "XY"/"UV" labels denote the
+    source vs destination image spaces, NOT different pixel-center conventions.
+    The only place the texel convention (center = i+0.5) appears is the boundary
+    with ``F.grid_sample``, encapsulated in ``coords.point_to_normalized``.
+    See COORDINATES.md.
 
 Usage:
     >>> warper = PixelMapWarperTorch(pixel_map, device="cuda")
-    >>> # Forward warp: XY image -> UV image
+    >>> # Forward warp: source image -> destination image
     >>> uv_img = warper.forward_warp(xy_img, dst_size=(200, 200))
-    >>> # Backward warp: UV image -> XY image
+    >>> # Backward warp: destination image -> source image
     >>> xy_img = warper.backward_warp(uv_img, dst_size=(100, 100))
 
 """
@@ -23,6 +28,7 @@ import numpy as np
 from typing import List, Tuple, Optional, Union
 from enum import Enum
 
+from . import coords
 from .config import get_config
 
 class AggregationMethod(Enum):
@@ -60,17 +66,19 @@ class PixelMapWarperTorch:
     """
     Warps images using pixel correspondence map (PyTorch version).
 
-    The pixel map defines correspondences from XY coordinate system to UV coordinate system:
+    The pixel map defines correspondences from the source image space ("XY") to
+    the destination image space ("UV"):
         (x, y) -> (u, v)
 
-    Coordinate System Conventions:
-        - XY (Camera): (0, 0) is the center of pixel (0, 0)
-                       Pixel (i, j) covers the range [i-0.5, i+0.5) x [j-0.5, j+0.5)
-        - UV (Projector): (0.5, 0.5) is the center of pixel (0, 0)
-                          Pixel (i, j) covers the range [i, i+1) x [j, j+1)
+    Coordinate convention (pixel-is-point, both spaces):
+        Integer coordinate i is the CENTER of pixel i; pixel (i, j) covers
+        [i-0.5, i+0.5) x [j-0.5, j+0.5). The same convention applies to both the
+        source ("XY") and destination ("UV") spaces. "XY"/"UV" are space labels,
+        not different centering rules. The texel convention (center = i+0.5)
+        appears only at the grid_sample boundary (coords.point_to_normalized).
 
-    Forward warp transforms an XY image to UV space (splatting).
-    Backward warp transforms a UV image to XY space (sampling).
+    Forward warp transforms a source image to destination space (splatting).
+    Backward warp transforms a destination image to source space (sampling).
 
     Attributes:
         map_tensor: Pixel correspondence map as tensor (N, 4) [x, y, u, v]
@@ -158,14 +166,13 @@ class PixelMapWarperTorch:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _xy_to_pixel(x: torch.Tensor) -> torch.Tensor:
-        """Convert XY coordinate to pixel index. (0,0) is pixel center."""
-        return torch.floor(x + 0.5).long()
+    def _to_pixel(c: torch.Tensor) -> torch.Tensor:
+        """Convert a coordinate to a pixel index (pixel-is-point: integer=center).
 
-    @staticmethod
-    def _uv_to_pixel(u: torch.Tensor) -> torch.Tensor:
-        """Convert UV coordinate to pixel index. (0.5,0.5) is pixel center."""
-        return torch.floor(u).long()
+        Used for both source and destination spaces (single convention).
+        Canonical definition: :func:`graycode.coords.to_pixel`.
+        """
+        return coords.to_pixel(c).long()
 
     # ------------------------------------------------------------------
     # Aggregation helper (shared by nearest / bilinear splatting)
@@ -336,13 +343,18 @@ class PixelMapWarperTorch:
         """Bilinear splatting: distribute each source pixel to 4 destination neighbors."""
         B, C, H, W = src_img.shape
 
-        src_x = self._xy_to_pixel(self.map_tensor[:, 0]) - src_offset[0]
-        src_y = self._xy_to_pixel(self.map_tensor[:, 1]) - src_offset[1]
+        src_x = self._to_pixel(self.map_tensor[:, 0]) - src_offset[0]
+        src_y = self._to_pixel(self.map_tensor[:, 1]) - src_offset[1]
 
         dst_x_f = self.map_tensor[:, 2]
         dst_y_f = self.map_tensor[:, 3]
 
-        # 4-neighbor pixel indices and bilinear weights
+        # 4-neighbor pixel indices and bilinear weights.
+        # pixel-is-point convention: integer = pixel center = array index, so the
+        # two neighbors of coordinate u are floor(u) and floor(u)+1, weighted by
+        # the fractional distance. A point on a pixel center (integer u) thus gets
+        # full weight on that single pixel (matching the nearest splat and the
+        # backward-warp sampling).
         x0 = torch.floor(dst_x_f).long()
         y0 = torch.floor(dst_y_f).long()
         wx1 = dst_x_f - x0.float()
@@ -396,10 +408,10 @@ class PixelMapWarperTorch:
         """Nearest-neighbor splatting: each source pixel maps to one destination pixel."""
         B, C, H, W = src_img.shape
 
-        src_x = self._xy_to_pixel(self.map_tensor[:, 0]) - src_offset[0]
-        src_y = self._xy_to_pixel(self.map_tensor[:, 1]) - src_offset[1]
-        dst_x = self._uv_to_pixel(self.map_tensor[:, 2])
-        dst_y = self._uv_to_pixel(self.map_tensor[:, 3])
+        src_x = self._to_pixel(self.map_tensor[:, 0]) - src_offset[0]
+        src_y = self._to_pixel(self.map_tensor[:, 1]) - src_offset[1]
+        dst_x = self._to_pixel(self.map_tensor[:, 2])
+        dst_y = self._to_pixel(self.map_tensor[:, 3])
 
         valid = (
             (src_x >= 0) & (src_x < W)
@@ -561,8 +573,8 @@ class PixelMapWarperTorch:
         """Build a (1, 2, dst_h, dst_w) UV sampling grid and a valid-pixel mask."""
         x_coords, y_coords, u_coords, v_coords = self.map_tensor.T
 
-        x_int = self._xy_to_pixel(x_coords) - xy_off_x
-        y_int = self._xy_to_pixel(y_coords) - xy_off_y
+        x_int = self._to_pixel(x_coords) - xy_off_x
+        y_int = self._to_pixel(y_coords) - xy_off_y
 
         valid = (x_int >= 0) & (x_int < dst_w) & (y_int >= 0) & (y_int < dst_h)
         if has_src_rect:
@@ -654,8 +666,10 @@ class PixelMapWarperTorch:
             in_bounds, sample_y, torch.full_like(sample_y, self._invalid_coord)
         )
 
-        norm_x = 2.0 * sample_x / max(W_uv, 1) - 1.0
-        norm_y = 2.0 * sample_y / max(H_uv, 1) - 1.0
+        # pixel-is-point -> grid_sample(align_corners=False) 正規化座標。
+        # ここが唯一の texel 規約への境界変換 (see coords.point_to_normalized)。
+        norm_x = coords.point_to_normalized(sample_x, max(W_uv, 1))
+        norm_y = coords.point_to_normalized(sample_y, max(H_uv, 1))
         grid = torch.cat([norm_x, norm_y], dim=1).permute(0, 2, 3, 1)
         grid_batch = grid.expand(B, -1, -1, -1)
 

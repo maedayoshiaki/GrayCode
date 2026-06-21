@@ -49,8 +49,8 @@ def run_graycode_pipeline(cfg: GraycodePipelineConfig) -> None:
         "gen_graycode.py",
         str(cfg.proj_height),
         str(cfg.proj_width),
-        str(cfg.width_step),  # ← width_step
-        str(cfg.height_step),  # ← height_step
+        str(cfg.height_step),  # height_step (gen/decode 共通で height, width 順)
+        str(cfg.width_step),  # width_step
     ]
     print("[1/4] Generating graycode patterns...")
     gen_graycode.main(gen_argv)
@@ -89,12 +89,14 @@ def run_graycode_pipeline(cfg: GraycodePipelineConfig) -> None:
     if cfg.run_interpolate and cam_height > 0 and cam_width > 0:
         # decode.py が出力する既定ファイル名をそのまま使う
         app_cfg = get_config().pipeline
+        # 補間手法は interpolate_c2p.default_method を単一の真実源とする (M3)
+        method = get_config().interpolate_c2p.default_method
         interp_argv = [
             "interpolate_c2p.py",
             app_cfg.default_input_file,
             str(cam_height),
             str(cam_width),
-            app_cfg.default_interpolation_method,
+            method,
         ]
         print("[4/4] Interpolating c2p correspondences...")
         interpolate_c2p.main(interp_argv)

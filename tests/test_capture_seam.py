@@ -41,5 +41,5 @@ def test_run_calibration_recovers_identity_mapping() -> None:
 
     proj_xy = p2c[:, 0:2]
     cam_xy = p2c[:, 2:4]
-    # Identity mapping up to the +0.5 block-center offset (step=1).
-    assert np.median(np.abs(proj_xy - (cam_xy + 0.5))) < 1.0
+    # pixel-is-point 統一後: 恒等幾何 (step=1) では proj == cam (block_center=g)。
+    assert np.median(np.abs(proj_xy - cam_xy)) < 1.0

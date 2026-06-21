@@ -7,6 +7,7 @@ import cv2
 from cv2 import structured_light
 import numpy as np
 
+from . import coords
 from .config import get_config, reload_config, split_cli_config_path
 
 
@@ -14,8 +15,8 @@ def generate_expanded_patterns(
     height: int, width: int, height_step: int, width_step: int
 ) -> List[np.ndarray]:
     """GrayCodeパターンを生成し、指定サイズに拡大した画像配列を返す。"""
-    gc_height = (height - 1) // height_step + 1
-    gc_width = (width - 1) // width_step + 1
+    gc_height = coords.reduced_size(height, height_step)
+    gc_width = coords.reduced_size(width, width_step)
 
     graycode = structured_light.GrayCodePattern.create(gc_width, gc_height)
     _, patterns = graycode.generate()
@@ -24,9 +25,9 @@ def generate_expanded_patterns(
     for pat in patterns:
         img = np.zeros((height, width), np.uint8)
         for y in range(height):
-            src_y = y // height_step
+            src_y = coords.block_of(y, height_step)
             for x in range(width):
-                src_x = x // width_step
+                src_x = coords.block_of(x, width_step)
                 img[y, x] = pat[src_y, src_x]
         expanded.append(img)
 
@@ -48,7 +49,7 @@ def print_usage() -> None:
     print(
         "Usage : python gen_graycode.py "
         "<projector image height> <projector image width> "
-        "[graycode width_step(default=1)] [graycode height_step(default=1)] "
+        "[graycode height_step(default=1)] [graycode width_step(default=1)] "
         "[--config <config.toml>]"
     )
     print()
@@ -74,10 +75,12 @@ def main(argv: list[str] | None = None) -> None:
     try:
         height = int(argv[1])
         width = int(argv[2])
-        width_step = int(argv[3]) if len(argv) == 5 else 1
-        height_step = int(argv[4]) if len(argv) == 5 else 1
+        # 引数順は decode.py と統一: height_step, width_step の順
+        # (主寸法 height, width と同じ順序)
+        height_step = int(argv[3]) if len(argv) == 5 else 1
+        width_step = int(argv[4]) if len(argv) == 5 else 1
     except ValueError:
-        print("height, width, width_step, height_step は整数で指定してください。")
+        print("height, width, height_step, width_step は整数で指定してください。")
         print_usage()
         return
 
