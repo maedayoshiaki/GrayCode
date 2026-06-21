@@ -13,6 +13,7 @@ try:
 except ImportError:
     SCIPY_AVAILABLE = False
 
+from . import coords
 from .config import get_config, reload_config, split_cli_config_path
 
 
@@ -147,15 +148,14 @@ def interpolate_p2c_delaunay(
 
     # 2. 補間グリッドの作成 (プロジェクタ画像の全画素)
     # プロジェクタは UV 規約(画素 i の中心は i+0.5)。decode の既知点も
-    # step*(g+0.5) = 画素中心にあるため、クエリも各画素中心 i+0.5 で行う。
+    # step*(g+0.5) = ブロック中心にあるため、クエリも各画素中心 i+0.5 で行う。
     # これにより step=1 では復号画素で既知点(GT)が厳密に再現され、
     # 出力 proj 座標列も decode/生P2C と同じ半整数規約で揃う。
-    grid_y, grid_x = np.mgrid[0:proj_height, 0:proj_width]
+    grid_x, grid_y = np.meshgrid(
+        coords.uv_pixel_centers(proj_width), coords.uv_pixel_centers(proj_height)
+    )
     query_points = np.stack(
-        (
-            (grid_x.ravel() + 0.5).astype(np.float32),
-            (grid_y.ravel() + 0.5).astype(np.float32),
-        ),
+        (grid_x.ravel().astype(np.float32), grid_y.ravel().astype(np.float32)),
         axis=1,
     )
 
@@ -208,8 +208,8 @@ def create_vis_image_p2c(
     cam_y = arr[:, 3]
 
     # proj 座標は UV 規約(中心=i+0.5)。画素インデックスは floor(u) で得る。
-    ix = np.floor(proj_x).astype(np.int32)
-    iy = np.floor(proj_y).astype(np.int32)
+    ix = coords.uv_to_pixel(proj_x).astype(np.int32)
+    iy = coords.uv_to_pixel(proj_y).astype(np.int32)
 
     valid = (
         (0 <= ix)

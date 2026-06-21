@@ -23,6 +23,7 @@ import numpy as np
 from typing import List, Tuple, Optional, Union
 from enum import Enum
 
+from . import coords
 from .config import get_config
 
 class AggregationMethod(Enum):
@@ -159,13 +160,19 @@ class PixelMapWarperTorch:
 
     @staticmethod
     def _xy_to_pixel(x: torch.Tensor) -> torch.Tensor:
-        """Convert XY coordinate to pixel index. (0,0) is pixel center."""
-        return torch.floor(x + 0.5).long()
+        """Convert XY coordinate to pixel index. (0,0) is pixel center.
+
+        Canonical definition: :func:`graycode.coords.xy_to_pixel`.
+        """
+        return coords.xy_to_pixel(x).long()
 
     @staticmethod
     def _uv_to_pixel(u: torch.Tensor) -> torch.Tensor:
-        """Convert UV coordinate to pixel index. (0.5,0.5) is pixel center."""
-        return torch.floor(u).long()
+        """Convert UV coordinate to pixel index. (0.5,0.5) is pixel center.
+
+        Canonical definition: :func:`graycode.coords.uv_to_pixel`.
+        """
+        return coords.uv_to_pixel(u).long()
 
     # ------------------------------------------------------------------
     # Aggregation helper (shared by nearest / bilinear splatting)
@@ -343,12 +350,13 @@ class PixelMapWarperTorch:
         dst_y_f = self.map_tensor[:, 3]
 
         # 4-neighbor pixel indices and bilinear weights.
-        # UV convention: the center of pixel k is at k+0.5. Shift by -0.5 so the
-        # weights are measured against pixel CENTERS, not edges; a point landing
-        # exactly on a pixel center then receives full weight on that single
-        # pixel (matching the nearest splat and the backward-warp sampling).
-        dst_x_c = dst_x_f - 0.5
-        dst_y_c = dst_y_f - 0.5
+        # UV convention: the center of pixel k is at k+0.5. Convert to
+        # array-index coordinates (integer = center) so the bilinear weights are
+        # measured against pixel CENTERS, not edges; a point landing exactly on a
+        # pixel center then receives full weight on that single pixel (matching
+        # the nearest splat and the backward-warp sampling). See coords.uv_to_array.
+        dst_x_c = coords.uv_to_array(dst_x_f)
+        dst_y_c = coords.uv_to_array(dst_y_f)
         x0 = torch.floor(dst_x_c).long()
         y0 = torch.floor(dst_y_c).long()
         wx1 = dst_x_c - x0.float()
@@ -660,8 +668,9 @@ class PixelMapWarperTorch:
             in_bounds, sample_y, torch.full_like(sample_y, self._invalid_coord)
         )
 
-        norm_x = 2.0 * sample_x / max(W_uv, 1) - 1.0
-        norm_y = 2.0 * sample_y / max(H_uv, 1) - 1.0
+        # UV -> grid_sample(align_corners=False) 正規化座標。see coords.uv_to_normalized
+        norm_x = coords.uv_to_normalized(sample_x, max(W_uv, 1))
+        norm_y = coords.uv_to_normalized(sample_y, max(H_uv, 1))
         grid = torch.cat([norm_x, norm_y], dim=1).permute(0, 2, 3, 1)
         grid_batch = grid.expand(B, -1, -1, -1)
 

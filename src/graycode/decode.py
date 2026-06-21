@@ -11,6 +11,7 @@ from collections import defaultdict
 import cv2
 import numpy as np
 
+from . import coords
 from .config import get_config, reload_config, split_cli_config_path
 
 
@@ -56,8 +57,8 @@ def decode_c2p(
     ``[((cam_x, cam_y), (proj_x, proj_y)), ...]`` using the same
     sub-block-centered projector-coordinate convention as the CLI.
     """
-    gc_width = ((proj_width - 1) // width_step) + 1
-    gc_height = ((proj_height - 1) // height_step) + 1
+    gc_width = coords.reduced_size(proj_width, width_step)
+    gc_height = coords.reduced_size(proj_height, height_step)
     graycode = cv2.structured_light.GrayCodePattern.create(gc_width, gc_height)
     graycode.setBlackThreshold(black_threshold)
     graycode.setWhiteThreshold(white_threshold)
@@ -72,8 +73,8 @@ def decode_c2p(
         err, proj_pix = graycode.getProjPixel(bit_imgs, int(x), int(y))
         if not err:
             fixed_pix = (
-                width_step * (proj_pix[0] + 0.5),
-                height_step * (proj_pix[1] + 0.5),
+                coords.block_center_uv(proj_pix[0], width_step),
+                coords.block_center_uv(proj_pix[1], height_step),
             )
             c2p_list.append(((int(x), int(y)), fixed_pix))
     return c2p_list, (cam_height, cam_width)
@@ -113,8 +114,8 @@ def main(argv: list[str] | None = None) -> tuple[int, int] | None:
     black_thr = cfg.decode.black_threshold
     white_thr = cfg.decode.white_threshold
 
-    gc_width = ((proj_width - 1) // width_step) + 1
-    gc_height = ((proj_height - 1) // height_step) + 1
+    gc_width = coords.reduced_size(proj_width, width_step)
+    gc_height = coords.reduced_size(proj_height, height_step)
 
     graycode = cv2.structured_light.GrayCodePattern.create(gc_width, gc_height)
     graycode.setBlackThreshold(black_thr)
@@ -167,8 +168,8 @@ def main(argv: list[str] | None = None) -> tuple[int, int] | None:
             # proj_pix[0] は X座標(width方向) なので width_step を掛ける
             # proj_pix[1] は Y座標(height方向) なので height_step を掛ける
             fixed_pix = (
-                width_step * (proj_pix[0] + 0.5),
-                height_step * (proj_pix[1] + 0.5),
+                coords.block_center_uv(proj_pix[0], width_step),
+                coords.block_center_uv(proj_pix[1], height_step),
             )
 
             viz_c2p[y, x, :] = [
