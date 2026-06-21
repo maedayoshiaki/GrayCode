@@ -80,6 +80,46 @@ def test_migrate_csv_p2c(tmp_path) -> None:
     assert cells[2] == "100" and cells[3] == "200"  # cam 不変
 
 
+def test_migrate_npz_shifts_proj_and_preserves_other_keys(tmp_path) -> None:
+    # 2dsr-prc ProjectorCameraMap.save 形式: p2c (N,4)[proj,proj,cam,cam] + proj_size
+    p = tmp_path / "p2c.npz"
+    np.savez(
+        p,
+        p2c=np.array([[3.5, 4.5, 9.0, 8.0], [0.5, 0.5, 1.0, 2.0]], dtype=np.float32),
+        proj_size=np.array([768, 1024], dtype=np.int64),
+    )
+    out = tmp_path / "out.npz"
+    migrate.migrate_npz(str(p), str(out))
+    with np.load(out) as d:
+        assert np.allclose(d["p2c"][:, 0:2], [[3.0, 4.0], [0.0, 0.0]])  # proj -0.5
+        assert np.allclose(d["p2c"][:, 2:4], [[9.0, 8.0], [1.0, 2.0]])  # cam 不変
+        assert list(d["proj_size"]) == [768, 1024]  # 他キー保持
+
+
+def test_migrate_file_dispatches_npz(tmp_path) -> None:
+    p = tmp_path / "geo.npz"
+    np.savez(
+        p,
+        p2c=np.array([[2.5, 2.5, 0.0, 0.0]], dtype=np.float32),
+        proj_size=np.array([4, 4], dtype=np.int64),
+    )
+    out = migrate.migrate_file(str(p))
+    assert out.endswith("geo_pixelpoint.npz")
+    with np.load(out) as d:
+        assert np.allclose(d["p2c"][:, 0:2], [[2.0, 2.0]])
+
+
+def test_migrate_npz_without_p2c_raises(tmp_path) -> None:
+    p = tmp_path / "bad.npz"
+    np.savez(p, foo=np.zeros(3))
+    out = tmp_path / "out.npz"
+    try:
+        migrate.migrate_npz(str(p), str(out))
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+
+
 def test_migrate_csv_c2p_proj_columns_detected(tmp_path) -> None:
     # c2p CSV は proj 列が後ろ (cam_x, cam_y, proj_x, proj_y)
     p = tmp_path / "result_c2p.csv"

@@ -172,8 +172,10 @@ uv run python -m graycode.migrate result_c2p.npy result_p2c.npy \
     result_p2c_compensated_delaunay.npy result_c2p.csv result_p2c.csv
 ```
 
-対応形式: c2p `(N,2,2)` object / p2c dict / p2c_compensated `(N,4)` / 各 CSV（ヘッダの
-`proj_x`,`proj_y` 列を自動検出）。実装は [`src/graycode/migrate.py`](src/graycode/migrate.py)。
+対応形式: c2p `(N,2,2)` object / p2c dict / p2c_compensated `(N,4)` / `.npz`
+（`{p2c: (N,4), proj_size, ...}` = 下流の `ProjectorCameraMap.save` 形式、他キーは保持）/
+各 CSV（ヘッダの `proj_x`,`proj_y` 列を自動検出）。実装は
+[`src/graycode/migrate.py`](src/graycode/migrate.py)。
 
 ---
 
