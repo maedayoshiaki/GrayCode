@@ -5,9 +5,11 @@
 CLI で実行する各スクリプトは、共通オプション `--config <path>`（短縮形 `-c`）で
 使用する `config.toml` を切り替え可能。
 
-> **座標系・ピクセルの扱いについては [`COORDINATES.md`](COORDINATES.md) を参照。**
-> カメラ（XY, 中心=整数）とプロジェクタ（UV, 中心=$i+0.5$）の 2 規約、step による
-> ブロック中心のシフト、変換の単一実装 `src/graycode/coords.py` を数式で定義している。
+> **座標系・ピクセルの扱いについては [`COORDINATES.md`](COORDINATES.md) を参照（唯一の正典）。**
+> 内部は単一規約 **pixel-is-point（整数 = 画素中心、カメラ・プロジェクタ共通）** に統一。
+> step によるブロック中心、grid_sample 境界の半画素変換、変換の単一実装
+> `src/graycode/coords.py` を数式で定義している。以下の本文中の座標式は要約であり、
+> 厳密な定義は COORDINATES.md が優先する。
 
 ## 目次
 
@@ -206,16 +208,15 @@ OpenCV の `GrayCodePattern` を使用して、有効な各カメラ画素のプ
 
 ### 5.3 座標スケーリング
 
-縮小空間の座標 $(g_x, g_y)$ をプロジェクタの実ピクセル座標 $(p_x, p_y)$ に変換する：
+縮小空間の座標 $(g_x, g_y)$ をプロジェクタの実ピクセル座標 $(p_x, p_y)$ に変換する。
+**pixel-is-point 規約**（整数 = 画素中心）でブロック中心を表す（`coords.block_center`）：
 
-$$p_x = w_s \cdot \left(g_x + 0.5\right)$$
+$$p_x = w_s \cdot g_x + \frac{w_s - 1}{2}, \qquad p_y = h_s \cdot g_y + \frac{h_s - 1}{2}$$
 
-$$p_y = h_s \cdot \left(g_y + 0.5\right)$$
-
-$+0.5$ の加算は、デコードされた座標がブロックのインデックス（左上基準）であるのに対し、
-ブロックの**中心座標**を指すためのオフセットである。
-例えば、$w_s = 4$ でデコード値 $g_x = 2$ の場合、$p_x = 4 \times 2.5 = 10.0$ となり、
-ブロック $[8, 12)$ の中心を表す。
+ブロック $g_x$ は全解像度画素 $[w_s g_x,\; w_s g_x + w_s - 1]$ を覆い、その中心が上式。
+例: $w_s = 1,\ g_x = 7 \Rightarrow p_x = 7$（画素 7 の中心）。$w_s = 4,\ g_x = 2
+\Rightarrow p_x = 9.5$（画素 $[8,11]$ の中心）。$w_s$ が奇数なら整数、偶数なら半整数。
+（旧版は UV 規約 $w_s(g_x+0.5)$ を用いていた。差は常に 0.5。詳細・移行は COORDINATES.md。）
 
 ### 5.4 出力データ構造
 
@@ -390,17 +391,15 @@ PyTorch ベースの GPU 高速画像ワーピングモジュール。
 
 ### 9.1 座標系の定義
 
-2 つの座標系を区別する：
+ソース（"XY"=カメラ）とデスティネーション（"UV"=プロジェクタ）は **同一の
+pixel-is-point 規約**（整数 $i$ = 画素 $i$ の中心、範囲 $[i-0.5, i+0.5)$）を用いる。
+"XY"/"UV" は空間ラベルであり、中心規約の違いではない。
 
-| 座標系 | 用途 | ピクセル中心 | ピクセル $(i, j)$ の範囲 |
-|---|---|---|---|
-| **XY** | カメラ（ソース） | $(i,\; j)$ | $[i - 0.5,\; i + 0.5) \times [j - 0.5,\; j + 0.5)$ |
-| **UV** | プロジェクタ（デスティネーション） | $(i + 0.5,\; j + 0.5)$ | $[i,\; i + 1) \times [j,\; j + 1)$ |
+**ピクセルインデックスへの変換：** $\text{idx} = \lfloor c + 0.5 \rfloor$（`coords.to_pixel`、両空間共通）
 
-**ピクセルインデックスへの変換：**
-
-- XY → ピクセル: $\text{idx} = \lfloor x + 0.5 \rfloor$
-- UV → ピクセル: $\text{idx} = \lfloor u \rfloor$
+唯一の例外は backward warp の `grid_sample(align_corners=False)` 境界で、そこだけ
+テクセル規約への半画素変換 $g = 2(p+0.5)/\text{size} - 1$（`coords.point_to_normalized`）
+を行う。詳細は COORDINATES.md。（旧版は UV を中心 $i+0.5$ の別規約としていた。）
 
 ### 9.2 Forward Warp（スプラッティング）
 
@@ -459,11 +458,11 @@ $$\text{grid}_{uv}[y_d, x_d] = \frac{\sum_i (u_i, v_i)}{n}$$
 
 #### 9.3.2 正規化座標への変換
 
-PyTorch の `F.grid_sample` は $[-1, 1]$ の正規化座標を要求するため、以下の変換を行う：
+PyTorch の `F.grid_sample` は $[-1, 1]$ の正規化座標を要求する。サンプリング座標
+$(u, v)$ は pixel-is-point なので、テクセル規約への半画素変換を含む以下を用いる
+（`coords.point_to_normalized`、`align_corners=False`、唯一の境界変換）：
 
-$$\hat{x} = \frac{2u}{W_{uv}} - 1, \quad \hat{y} = \frac{2v}{H_{uv}} - 1$$
-
-`align_corners=False` の設定に対応する正規化式である。
+$$\hat{x} = \frac{2(u + 0.5)}{W_{uv}} - 1, \quad \hat{y} = \frac{2(v + 0.5)}{H_{uv}} - 1$$
 
 #### 9.3.3 `F.grid_sample` による補間
 

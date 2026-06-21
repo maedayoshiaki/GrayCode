@@ -132,9 +132,9 @@ def interpolate_c2p_array(
     proj_x = c2p_list[:, 2]
     proj_y = c2p_list[:, 3]
 
-    # カメラは XY 規約 (中心=整数)。画素インデックス = floor(x+0.5)。
-    ix = coords.xy_to_pixel(cam_x).astype(np.int32)
-    iy = coords.xy_to_pixel(cam_y).astype(np.int32)
+    # 画素インデックス = round(x) = floor(x+0.5) (pixel-is-point)。
+    ix = coords.to_pixel(cam_x).astype(np.int32)
+    iy = coords.to_pixel(cam_y).astype(np.int32)
     valid = (
         (0 <= ix)
         & (ix < cam_width)
@@ -209,7 +209,7 @@ def interpolate_c2p_delaunay(
     # 2. 補完グリッドの作成
     # カメラ全画素の中心座標 (XY 規約: 画素中心 = 整数 なので arange そのもの)
     grid_x, grid_y = np.meshgrid(
-        coords.xy_pixel_centers(cam_width), coords.xy_pixel_centers(cam_height)
+        coords.pixel_centers(cam_width), coords.pixel_centers(cam_height)
     )
     # (H*W, 2) の形に変形
     query_points = np.stack((grid_x.ravel(), grid_y.ravel()), axis=1)
@@ -313,9 +313,9 @@ def create_vis_image(
     proj_x = arr[:, 2]
     proj_y = arr[:, 3]
 
-    # カメラは XY 規約 (中心=整数)。画素インデックス = floor(x+0.5)。
-    ix = coords.xy_to_pixel(cam_x).astype(np.int32)
-    iy = coords.xy_to_pixel(cam_y).astype(np.int32)
+    # 画素インデックス = round(x) = floor(x+0.5) (pixel-is-point)。
+    ix = coords.to_pixel(cam_x).astype(np.int32)
+    iy = coords.to_pixel(cam_y).astype(np.int32)
 
     # 有効な点だけをマスク
     valid = (

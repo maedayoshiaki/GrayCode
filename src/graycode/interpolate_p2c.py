@@ -147,12 +147,12 @@ def interpolate_p2c_delaunay(
     )
 
     # 2. 補間グリッドの作成 (プロジェクタ画像の全画素)
-    # プロジェクタは UV 規約(画素 i の中心は i+0.5)。decode の既知点も
-    # step*(g+0.5) = ブロック中心にあるため、クエリも各画素中心 i+0.5 で行う。
-    # これにより step=1 では復号画素で既知点(GT)が厳密に再現され、
-    # 出力 proj 座標列も decode/生P2C と同じ半整数規約で揃う。
+    # pixel-is-point 規約: 画素 i の中心は整数 i。decode の既知点も
+    # block_center = step*g+(step-1)/2 (step=1 で整数) にあるため、クエリも
+    # 各画素中心 (整数) で行う。これにより step=1 では復号画素で既知点(GT)が
+    # 厳密に再現され、出力 proj 座標列も decode/生P2C と同じ規約で揃う。
     grid_x, grid_y = np.meshgrid(
-        coords.uv_pixel_centers(proj_width), coords.uv_pixel_centers(proj_height)
+        coords.pixel_centers(proj_width), coords.pixel_centers(proj_height)
     )
     query_points = np.stack(
         (grid_x.ravel().astype(np.float32), grid_y.ravel().astype(np.float32)),
@@ -207,9 +207,9 @@ def create_vis_image_p2c(
     cam_x = arr[:, 2]
     cam_y = arr[:, 3]
 
-    # proj 座標は UV 規約(中心=i+0.5)。画素インデックスは floor(u) で得る。
-    ix = coords.uv_to_pixel(proj_x).astype(np.int32)
-    iy = coords.uv_to_pixel(proj_y).astype(np.int32)
+    # pixel-is-point 規約 (中心=整数)。画素インデックス = round = floor(u+0.5)。
+    ix = coords.to_pixel(proj_x).astype(np.int32)
+    iy = coords.to_pixel(proj_y).astype(np.int32)
 
     valid = (
         (0 <= ix)

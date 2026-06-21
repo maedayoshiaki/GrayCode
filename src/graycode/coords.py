@@ -1,26 +1,28 @@
 # coding: utf-8
 """ピクセル座標変換の単一の真実源 (single source of truth)。
 
-このプロジェクトは **2 つの異なるピクセル中心規約** を併用する。両者を取り違える
-と半画素 (0.5px) のズレが連鎖的に混入するため、座標↔画素インデックスの変換は
-すべてこのモジュールの関数を経由すること。各関数の docstring が「正準定義」であり、
-他モジュール (decode / interpolate_c2p / interpolate_p2c / warp_image) はこれを
-再実装せず必ず呼び出す。規約の全体像と数式は ``COORDINATES.md`` を参照。
+このプロジェクトは内部で **単一のピクセル規約 "pixel-is-point"** を用いる:
+**整数 i = 画素 i の中心**（画素 i は [i-0.5, i+0.5) を占める）。これはカメラ・
+プロジェクタの双方に共通で、OpenCV / numpy / scipy / matplotlib と同じ標準規約。
+
+唯一の例外は GPU サンプリング (``torch.nn.functional.grid_sample``) との境界で、
+そこだけ "pixel-is-area / texel-center"（中心 = i+0.5）規約への変換が必要になる。
+その半画素変換は :func:`point_to_normalized` 1 か所に閉じ込めてある。
+
+座標↔画素インデックスの変換はすべてこのモジュールの関数を経由すること
+（各所で再実装しない）。各関数の docstring が「正準定義」。背景・業界比較・移行履歴は
+``COORDINATES.md`` を参照。
 
 ────────────────────────────────────────────────────────────────────
 規約のまとめ
 ────────────────────────────────────────────────────────────────────
-カメラ (XY, ソース) : 画素 i の **中心は整数 i**。画素 i は [i-0.5, i+0.5)。
-    画素インデックス = round(x) = floor(x + 0.5)。
-    (numpy/OpenCV の配列標本化と同じ。``np.where`` が返す整数がそのまま中心。)
-
-プロジェクタ (UV, デスティネーション) : 画素 i の **中心は i + 0.5**。
-    画素 i は [i, i+1)。画素インデックス = floor(u)。
-    (GPU テクスチャ / grid_sample と同じ。decode の +0.5 オフセットもこれ。)
-
-GrayCode の step (ブロック) : step=s のとき、縮小グレイコード座標 g 1 つが
-    s×s の全解像度画素ブロックを表す。代表座標はブロック中心 = s*(g+0.5) (UV)。
-    s が大きいほど中心の間隔と基準オフセットが s に比例して変わる点に注意。
+- 画素 i の中心 = 整数 i。画素 i の範囲 = [i-0.5, i+0.5)。
+- 連続座標 c → 画素インデックス = round(c) = floor(c + 0.5)  (:func:`to_pixel`)。
+- 全 n 画素の中心座標 = {0, 1, ..., n-1} = arange(n)  (:func:`pixel_centers`)。
+- GrayCode の step=s: 縮小座標 g 1 つが s 画素のブロックを表す。代表座標は
+  ブロック中心 = s*g + (s-1)/2  (:func:`block_center`、pixel-is-point)。
+- grid_sample(align_corners=False) へ渡すときだけ texel 規約へ:
+  正規化座標 = 2*(p+0.5)/size - 1  (:func:`point_to_normalized`)。
 """
 
 from __future__ import annotations
@@ -28,16 +30,12 @@ from __future__ import annotations
 import numpy as np
 
 __all__ = [
-    "xy_pixel_centers",
-    "xy_to_pixel",
-    "uv_pixel_centers",
-    "uv_to_pixel",
-    "uv_to_array",
-    "array_to_uv",
-    "uv_to_normalized",
+    "pixel_centers",
+    "to_pixel",
+    "point_to_normalized",
     "reduced_size",
     "block_of",
-    "block_center_uv",
+    "block_center",
 ]
 
 
@@ -49,74 +47,41 @@ def _floor(a):
     return np.floor(a)
 
 
-# ── カメラ (XY): 画素中心 = 整数 ──────────────────────────────────────
+# ── 画素中心 = 整数 (pixel-is-point, カメラ・プロジェクタ共通) ────────
 
 
-def xy_pixel_centers(n: int) -> np.ndarray:
-    """全 ``n`` 画素の中心 XY 座標 (= 0, 1, ..., n-1)。
+def pixel_centers(n: int) -> np.ndarray:
+    """全 ``n`` 画素の中心座標 (= 0, 1, ..., n-1)。
 
-    カメラでは画素 i の中心が整数 i なので、画素中心の座標列は arange そのもの。
-    補間のクエリ格子 (カメラ全画素) を作るのに使う。
+    画素 i の中心が整数 i なので、画素中心の座標列は arange そのもの。
+    補間のクエリ格子（カメラ/プロジェクタの全画素）を作るのに使う。
     """
     return np.arange(n, dtype=np.float64)
 
 
-def xy_to_pixel(x):
-    """連続 XY 座標 → 画素インデックス (float, 未キャスト)。
+def to_pixel(c):
+    """連続座標 → 画素インデックス (float, 未キャスト)。
 
-    画素中心 = 整数なので最近傍画素は round(x) = floor(x + 0.5)。
+    画素中心 = 整数なので最近傍画素は round(c) = floor(c + 0.5)。
     返り値は float (numpy なら ``.astype(np.int32)``、torch なら ``.long()`` で
     呼び出し側がキャストする)。入力 dtype/backend をそのまま保つ。
     """
-    return _floor(x + 0.5)
+    return _floor(c + 0.5)
 
 
-# ── プロジェクタ (UV): 画素中心 = 整数 + 0.5 ─────────────────────────
+def point_to_normalized(p, size: int):
+    """pixel-is-point 座標 → ``F.grid_sample(align_corners=False)`` 用の正規化座標。
 
-
-def uv_pixel_centers(n: int) -> np.ndarray:
-    """全 ``n`` 画素の中心 UV 座標 (= 0.5, 1.5, ..., n-0.5)。
-
-    プロジェクタでは画素 i の中心が i + 0.5。補間のクエリ格子 (プロジェクタ
-    全画素) を画素中心で作るのに使う。
+    grid_sample(align_corners=False) は内部で texel 規約 (画素 i の中心 = i+0.5) を
+    用い、正規化座標 g と配列画素中心座標 q を
+        q = ((g + 1) * size - 1) / 2
+    で対応づける。pixel-is-point 座標 p は texel 座標で p+0.5 に当たるので、
+    q = p+0.5 を解いて
+        g = 2*(p + 0.5)/size - 1
+    を得る。**この +0.5 が pixel-is-point ↔ texel 規約の唯一の境界変換**である
+    (導出は COORDINATES.md)。
     """
-    return np.arange(n, dtype=np.float64) + 0.5
-
-
-def uv_to_pixel(u):
-    """連続 UV 座標 → 画素インデックス (float, 未キャスト)。
-
-    画素 i が [i, i+1) を占めるので、座標 u を含む画素は floor(u)。
-    """
-    return _floor(u)
-
-
-def uv_to_array(u):
-    """UV 座標 → 「配列インデックス座標」(= u - 0.5)。
-
-    配列インデックス座標とは「整数 = 画素中心」となる座標系 (XY と同じ規約)。
-    UV では中心が i+0.5 なので 0.5 引くと配列インデックス上の位置になる。
-    双線形スプラッティングや中心基準の重み計算で使う
-    (例: forward warp の bilinear splat)。
-    """
-    return u - 0.5
-
-
-def array_to_uv(a):
-    """「配列インデックス座標」→ UV 座標 (= a + 0.5)。:func:`uv_to_array` の逆。"""
-    return a + 0.5
-
-
-def uv_to_normalized(u, size: int):
-    """UV 座標 → ``F.grid_sample(align_corners=False)`` 用の正規化座標 [-1, 1]。
-
-    align_corners=False では正規化座標 g と画素中心座標 p が
-        p = ((g + 1) * size - 1) / 2
-    で対応する。UV 座標 u (中心 = i+0.5) は配列上の画素中心座標 u-0.5 に当たるので
-        g = 2*u/size - 1
-    が UV を直接正規化する式になる (導出は COORDINATES.md)。
-    """
-    return 2.0 * u / size - 1.0
+    return 2.0 * (p + 0.5) / size - 1.0
 
 
 # ── GrayCode の step (ブロック / 縮小解像度) ─────────────────────────
@@ -139,15 +104,16 @@ def block_of(pixel, step: int):
     return pixel // step
 
 
-def block_center_uv(g, step: int):
-    """縮小グレイコード座標 ``g`` → ブロック中心の UV 座標 (= step*(g+0.5))。
+def block_center(g, step: int):
+    """縮小グレイコード座標 ``g`` → ブロック中心の座標 (pixel-is-point)。
 
-    decode が記録するプロジェクタ座標 (GT) の定義。ブロック g は UV 範囲
-    [step*g, step*g+step) を占め、その中心が step*(g+0.5)。
+    ``step * g + (step - 1) / 2``。decode が記録するプロジェクタ座標 (GT) の定義。
+    ブロック g は全解像度画素 [step*g, step*g+step-1] を覆い、その中心が
+    step*g + (step-1)/2 (整数=画素中心 規約)。
 
-    注意 (step によるシフト): step=1 では g+0.5 で画素 g の中心に一致するが、
-    step>1 では「画素」ではなく step 幅の **ブロック** の中心であり、隣接ブロック
-    中心の間隔は step、基準オフセットは step/2 になる。ブロック中心が単一画素の
-    中心 (i+0.5) に一致するのは step が奇数のとき (i = step*g + (step-1)/2) のみ。
+    - step=1: g （画素 g の中心、デコード値そのもの）。
+    - step が奇数: 整数 (ブロック中央の画素中心)。
+    - step が偶数: 半整数 (隣り合う2画素中心の中間)。いずれも pixel-is-point 座標
+      として正しい点推定 (一様照射ブロックの幾何中心)。
     """
-    return step * (g + 0.5)
+    return step * g + (step - 1) / 2
