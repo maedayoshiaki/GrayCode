@@ -321,6 +321,10 @@ $$f(\mathbf{q}) = \mathbf{p}_k, \quad k = \arg\min_i \|\mathbf{q} - \mathbf{c}_i
   - `[i, 0, :] = (cam_x, cam_y)`, `[i, 1, :] = (proj_x, proj_y)`
 - `result_c2p_compensated_{method}.csv`: `cam_x, cam_y, proj_x, proj_y`
 - `result_c2p_compensated_{method}_vis.png`: 可視化画像
+- `result_c2p_compensated_{method}_extrapolated.png`: 凸包外 (Nearest 外挿) 画素のマスク
+  (白=外挿=信頼度低。delaunay のみ。補間値と外挿値を区別する。M2)
+
+出力先は `[paths].output_dir`（既定 `.`=CWD）で切り替え可能 (M6)。
 
 ---
 
@@ -361,6 +365,8 @@ C2P 補間（セクション 6.3）と同じアルゴリズムを、定義域と
 - `result_p2c_compensated_delaunay.npy`: `(H*W, 4)` float32 配列 `[proj_x, proj_y, cam_x, cam_y]`
 - `result_p2c_compensated_delaunay.csv`: `proj_x, proj_y, cam_x, cam_y`
 - `result_p2c_compensated_delaunay_vis.png`: 可視化画像
+- `result_p2c_compensated_delaunay_extrapolated.png`: 凸包外 (Nearest 外挿) 画素のマスク
+  (白=外挿=信頼度低。M2)。出力先は `[paths].output_dir` で切替可 (M6)
 
 ---
 

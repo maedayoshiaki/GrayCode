@@ -12,7 +12,12 @@ import cv2
 import numpy as np
 
 from . import coords
-from .config import get_config, reload_config, split_cli_config_path
+from .config import (
+    get_config,
+    reload_config,
+    resolve_output_path,
+    split_cli_config_path,
+)
 
 
 def print_usage() -> None:
@@ -152,7 +157,10 @@ def main(argv: list[str] | None = None) -> tuple[int, int] | None:
     ys, xs = np.where(valid_mask)
 
     # valid maskを保存
-    cv2.imwrite("valid_mask.png", (valid_mask * 255).astype(np.uint8))
+    cv2.imwrite(
+        str(resolve_output_path("valid_mask.png")),
+        (valid_mask * 255).astype(np.uint8),
+    )
 
     c2p_list: List[Tuple[Tuple[int, int], Tuple[float, float]]] = []
 
@@ -181,18 +189,21 @@ def main(argv: list[str] | None = None) -> tuple[int, int] | None:
 
     print("=== Result ===")
     print(f"Decoded c2p correspondences : {len(c2p_list)}")
-    cv2.imwrite("visualize_c2p.png", viz_c2p)
-    print("Visualized image : './visualize_c2p.png'")
-    with open("result_c2p.csv", "w", encoding="utf-8") as f:
+    viz_path = resolve_output_path("visualize_c2p.png")
+    cv2.imwrite(str(viz_path), viz_c2p)
+    print(f"Visualized image : '{viz_path}'")
+    c2p_csv = resolve_output_path("result_c2p.csv")
+    with open(c2p_csv, "w", encoding="utf-8") as f:
         f.write("cam_x, cam_y, proj_x, proj_y\n")
         for (cam_x, cam_y), (proj_x, proj_y) in c2p_list:
             f.write(f"{cam_x}, {cam_y}, {proj_x}, {proj_y}\n")
 
     # NumPy形式でも保存
-    np.save("result_c2p.npy", np.array(c2p_list, dtype=object))
+    c2p_npy = resolve_output_path("result_c2p.npy")
+    np.save(c2p_npy, np.array(c2p_list, dtype=object))
 
-    print("NumPy array : './result_c2p.npy'")
-    print("output : './result_c2p.csv'")
+    print(f"NumPy array : '{c2p_npy}'")
+    print(f"output : '{c2p_csv}'")
     print()
 
     # --- P2C (Projector → Camera) マップ生成 ---
@@ -202,21 +213,23 @@ def main(argv: list[str] | None = None) -> tuple[int, int] | None:
         p2c_dict[(proj_x, proj_y)].append((cam_x, cam_y))
 
     # CSV保存（1対応1行）
-    with open("result_p2c.csv", "w", encoding="utf-8") as f:
+    p2c_csv = resolve_output_path("result_p2c.csv")
+    with open(p2c_csv, "w", encoding="utf-8") as f:
         f.write("proj_x, proj_y, cam_x, cam_y\n")
         for (proj_x, proj_y), cam_list in sorted(p2c_dict.items()):
             for cam_x, cam_y in cam_list:
                 f.write(f"{proj_x}, {proj_y}, {cam_x}, {cam_y}\n")
 
     # NumPy形式でも保存（辞書をそのまま保持）
-    np.save("result_p2c.npy", np.array(dict(p2c_dict), dtype=object))
+    p2c_npy = resolve_output_path("result_p2c.npy")
+    np.save(p2c_npy, np.array(dict(p2c_dict), dtype=object))
 
     total_correspondences = sum(len(v) for v in p2c_dict.values())
     print("=== P2C Result ===")
     print(f"Unique projector pixels : {len(p2c_dict)}")
     print(f"Total p2c correspondences : {total_correspondences}")
-    print("NumPy dict : './result_p2c.npy'")
-    print("output : './result_p2c.csv'")
+    print(f"NumPy dict : '{p2c_npy}'")
+    print(f"output : '{p2c_csv}'")
     print()
 
     return (cam_height, cam_width)

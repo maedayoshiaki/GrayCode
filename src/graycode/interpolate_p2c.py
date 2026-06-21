@@ -14,7 +14,12 @@ except ImportError:
     SCIPY_AVAILABLE = False
 
 from . import coords
-from .config import get_config, reload_config, split_cli_config_path
+from .config import (
+    get_config,
+    reload_config,
+    resolve_output_path,
+    split_cli_config_path,
+)
 
 
 def load_p2c_numpy_array(map_file_path: str) -> np.ndarray:
@@ -102,13 +107,16 @@ def interpolate_p2c_delaunay(
     proj_height: int,
     proj_width: int,
     p2c_arr: np.ndarray,
-) -> np.ndarray:
+    return_mask: bool = False,
+):
     """ドロネー三角形分割による線形補間で全プロジェクタ画素のカメラ座標を求める。
 
     Args:
         proj_height: プロジェクタ画像の高さ
         proj_width:  プロジェクタ画像の幅
         p2c_arr:     (N, 4) float32 配列 [proj_x, proj_y, cam_x, cam_y]
+        return_mask: True のとき (out, extrapolated) を返す。extrapolated は (H*W,)
+                     bool で凸包外 (NearestND 外挿 = 信頼度の低い) 画素が True (M2)。
 
     Returns:
         (proj_height * proj_width, 4) float32 配列
@@ -180,6 +188,8 @@ def interpolate_p2c_delaunay(
     out[:, 2] = interpolated_values[:, 0].astype(np.float32)  # cam_x
     out[:, 3] = interpolated_values[:, 1].astype(np.float32)  # cam_y
 
+    if return_mask:
+        return out, nan_mask
     return out
 
 
@@ -283,29 +293,36 @@ def main(argv: list[str] | None = None) -> None:
     )
     print(f"Target projector size: {proj_width}x{proj_height}")
 
-    p2c_interp = interpolate_p2c_delaunay(proj_height, proj_width, p2c_arr)
+    p2c_interp, extrapolated = interpolate_p2c_delaunay(
+        proj_height, proj_width, p2c_arr, return_mask=True
+    )
+
+    base = os.path.splitext(os.path.basename(p2c_numpy_filename))[0]
 
     # 可視化画像
     vis_image = create_vis_image_p2c(
         proj_height, proj_width, p2c_interp, dtype=np.dtype(np.uint8)
     )
-    vis_filename = (
-        os.path.splitext(p2c_numpy_filename)[0] + "_compensated_delaunay_vis.png"
-    )
-    cv2.imwrite(vis_filename, vis_image)
-    print(f"Saved visualization image to '{vis_filename}'")
+    vis_path = resolve_output_path(f"{base}_compensated_delaunay_vis.png")
+    cv2.imwrite(str(vis_path), vis_image)
+    print(f"Saved visualization image to '{vis_path}'")
+
+    # 凸包外 (Nearest 外挿) 画素のマスクを保存 (M2: 補間値と外挿値を区別する)
+    mask_path = resolve_output_path(f"{base}_compensated_delaunay_extrapolated.png")
+    mask_img = extrapolated.reshape(proj_height, proj_width).astype(np.uint8) * 255
+    cv2.imwrite(str(mask_path), mask_img)
+    frac = 100.0 * float(np.count_nonzero(extrapolated)) / extrapolated.size
+    print(f"Saved extrapolation mask to '{mask_path}' ({frac:.1f}% extrapolated)")
 
     # npy 保存 (N, 4) float32
-    out_filename = (
-        os.path.splitext(p2c_numpy_filename)[0] + "_compensated_delaunay.npy"
-    )
-    np.save(out_filename, p2c_interp)
-    print(f"Saved compensated correspondences to '{out_filename}'")
+    out_path = resolve_output_path(f"{base}_compensated_delaunay.npy")
+    np.save(out_path, p2c_interp)
+    print(f"Saved compensated correspondences to '{out_path}'")
 
     # CSV 保存
-    csv_filename = "result_p2c_compensated_delaunay.csv"
+    csv_path = resolve_output_path("result_p2c_compensated_delaunay.csv")
     precision = get_config().interpolate_p2c.csv_precision
-    with open(csv_filename, "w", encoding="utf-8") as f:
+    with open(csv_path, "w", encoding="utf-8") as f:
         f.write("proj_x, proj_y, cam_x, cam_y\n")
         for row in p2c_interp:
             f.write(
@@ -313,7 +330,7 @@ def main(argv: list[str] | None = None) -> None:
                 f"{row[2]:.{precision}f}, {row[3]:.{precision}f}\n"
             )
 
-    print(f"output : './{csv_filename}'")
+    print(f"output : '{csv_path}'")
     print()
 
 
