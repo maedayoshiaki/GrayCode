@@ -342,11 +342,17 @@ class PixelMapWarperTorch:
         dst_x_f = self.map_tensor[:, 2]
         dst_y_f = self.map_tensor[:, 3]
 
-        # 4-neighbor pixel indices and bilinear weights
-        x0 = torch.floor(dst_x_f).long()
-        y0 = torch.floor(dst_y_f).long()
-        wx1 = dst_x_f - x0.float()
-        wy1 = dst_y_f - y0.float()
+        # 4-neighbor pixel indices and bilinear weights.
+        # UV convention: the center of pixel k is at k+0.5. Shift by -0.5 so the
+        # weights are measured against pixel CENTERS, not edges; a point landing
+        # exactly on a pixel center then receives full weight on that single
+        # pixel (matching the nearest splat and the backward-warp sampling).
+        dst_x_c = dst_x_f - 0.5
+        dst_y_c = dst_y_f - 0.5
+        x0 = torch.floor(dst_x_c).long()
+        y0 = torch.floor(dst_y_c).long()
+        wx1 = dst_x_c - x0.float()
+        wy1 = dst_y_c - y0.float()
         wx0 = 1.0 - wx1
         wy0 = 1.0 - wy1
 

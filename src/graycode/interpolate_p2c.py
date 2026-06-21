@@ -50,6 +50,53 @@ def load_p2c_numpy_array(map_file_path: str) -> np.ndarray:
     raise TypeError("Unsupported P2C numpy format")
 
 
+def _aggregate_duplicate_points(
+    points: np.ndarray,
+    values: np.ndarray,
+    stat: str = "median",
+) -> tuple[np.ndarray, np.ndarray]:
+    """同一プロジェクタ座標に対する複数のカメラ座標を1点に集約する。
+
+    P2C は本質的に1対多(1プロジェクタ画素を複数カメラ画素が観測する)。
+    ``LinearNDInterpolator`` は重複入力点を平均化せず、内部 QHull が重複頂点を
+    coplanar として先頭1点のみ採用し残りを黙殺する。そのため補間前にここで
+    プロジェクタ座標ごとにカメラ座標を集約しておく。
+
+    Args:
+        points: (N, 2) プロジェクタ座標
+        values: (N, 2) カメラ座標
+        stat:   "median"(既定, 外れ値に頑健) または "mean"
+
+    Returns:
+        (uniq_points, agg_values): 一意プロジェクタ座標と集約済みカメラ座標。
+        重複が無ければ入力をそのまま返す。
+    """
+    uniq, inv = np.unique(points, axis=0, return_inverse=True)
+    inv = np.asarray(inv).ravel()
+    if len(uniq) == len(points):
+        return points, values  # 重複なし
+
+    counts = np.bincount(inv, minlength=len(uniq))
+    out = np.empty((len(uniq), values.shape[1]), dtype=values.dtype)
+
+    if stat == "mean":
+        for k in range(values.shape[1]):
+            sums = np.bincount(inv, weights=values[:, k], minlength=len(uniq))
+            out[:, k] = (sums / counts).astype(values.dtype, copy=False)
+    else:  # median (成分ごと; 偶数群は2中央値の平均をとる真の中央値)
+        starts = np.cumsum(counts) - counts
+        lo = starts + (counts - 1) // 2  # 下側中央 (0-index)
+        hi = starts + counts // 2  # 上側中央 (奇数群では lo==hi)
+        for k in range(values.shape[1]):
+            order = np.lexsort((values[:, k], inv))  # 第1キー=群, 第2キー=値
+            c_sorted = values[order, k]
+            out[:, k] = ((c_sorted[lo] + c_sorted[hi]) * 0.5).astype(
+                values.dtype, copy=False
+            )
+
+    return uniq.astype(points.dtype, copy=False), out
+
+
 def interpolate_p2c_delaunay(
     proj_height: int,
     proj_width: int,
@@ -89,12 +136,27 @@ def interpolate_p2c_delaunay(
     points = valid_data[:, 0:2]  # proj_x, proj_y
     values = valid_data[:, 2:4]  # cam_x, cam_y
 
-    print(f"  - Input points: {len(points)} correspondences")
+    # 1対多(同一プロジェクタ座標に複数カメラ座標)を集約してから補間する。
+    # LinearNDInterpolator は重複点を平均化しないため、ここで明示集約する。
+    n_raw = len(points)
+    points, values = _aggregate_duplicate_points(points, values, stat="median")
+    print(
+        f"  - Input points: {len(points)} unique projector coords "
+        f"(aggregated from {n_raw} correspondences)"
+    )
 
     # 2. 補間グリッドの作成 (プロジェクタ画像の全画素)
+    # プロジェクタは UV 規約(画素 i の中心は i+0.5)。decode の既知点も
+    # step*(g+0.5) = 画素中心にあるため、クエリも各画素中心 i+0.5 で行う。
+    # これにより step=1 では復号画素で既知点(GT)が厳密に再現され、
+    # 出力 proj 座標列も decode/生P2C と同じ半整数規約で揃う。
     grid_y, grid_x = np.mgrid[0:proj_height, 0:proj_width]
     query_points = np.stack(
-        (grid_x.ravel().astype(np.float32), grid_y.ravel().astype(np.float32)), axis=1
+        (
+            (grid_x.ravel() + 0.5).astype(np.float32),
+            (grid_y.ravel() + 0.5).astype(np.float32),
+        ),
+        axis=1,
     )
 
     # 3. ドロネー分割による線形補間
@@ -145,8 +207,9 @@ def create_vis_image_p2c(
     cam_x = arr[:, 2]
     cam_y = arr[:, 3]
 
-    ix = np.rint(proj_x).astype(np.int32)
-    iy = np.rint(proj_y).astype(np.int32)
+    # proj 座標は UV 規約(中心=i+0.5)。画素インデックスは floor(u) で得る。
+    ix = np.floor(proj_x).astype(np.int32)
+    iy = np.floor(proj_y).astype(np.int32)
 
     valid = (
         (0 <= ix)

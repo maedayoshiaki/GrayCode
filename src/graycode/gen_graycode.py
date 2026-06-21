@@ -48,7 +48,7 @@ def print_usage() -> None:
     print(
         "Usage : python gen_graycode.py "
         "<projector image height> <projector image width> "
-        "[graycode width_step(default=1)] [graycode height_step(default=1)] "
+        "[graycode height_step(default=1)] [graycode width_step(default=1)] "
         "[--config <config.toml>]"
     )
     print()
@@ -74,10 +74,12 @@ def main(argv: list[str] | None = None) -> None:
     try:
         height = int(argv[1])
         width = int(argv[2])
-        width_step = int(argv[3]) if len(argv) == 5 else 1
-        height_step = int(argv[4]) if len(argv) == 5 else 1
+        # 引数順は decode.py と統一: height_step, width_step の順
+        # (主寸法 height, width と同じ順序)
+        height_step = int(argv[3]) if len(argv) == 5 else 1
+        width_step = int(argv[4]) if len(argv) == 5 else 1
     except ValueError:
-        print("height, width, width_step, height_step は整数で指定してください。")
+        print("height, width, height_step, width_step は整数で指定してください。")
         print_usage()
         return
 
