@@ -21,4 +21,7 @@ packages = ["src/graycode"]
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    # 評価図 (graycode.evaluation.viz) のヒストグラム/ヒートマップ/誤差ベクトル場用。
+    # 任意依存: 不在でも生の誤差配列(.npy)と統計サマリは常に出力される。
+    "matplotlib>=3.8",
 ]

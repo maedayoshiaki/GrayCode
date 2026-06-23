@@ -108,6 +108,7 @@ def interpolate_p2c_delaunay(
     proj_width: int,
     p2c_arr: np.ndarray,
     return_mask: bool = False,
+    extrapolate: bool = True,
 ):
     """ドロネー三角形分割による線形補間で全プロジェクタ画素のカメラ座標を求める。
 
@@ -172,14 +173,17 @@ def interpolate_p2c_delaunay(
     lin_interp = LinearNDInterpolator(points, values)
     interpolated_values = lin_interp(query_points)  # (N_pixels, 2)
 
-    # 4. 凸包外部を最近傍で埋める
+    # 4. 凸包外部の処理: 既定は最近傍で埋める。``extrapolate=False`` のときは埋めず
+    #    NaN のまま残す（投影領域マスク外を穴埋めしない＝外挿オフ）。
     nan_mask = np.isnan(interpolated_values[:, 0])
-    if np.any(nan_mask):
+    if extrapolate and np.any(nan_mask):
         print(
             f"  - Filling {np.sum(nan_mask)} outside points with Nearest Neighbor..."
         )
         near_interp = NearestNDInterpolator(points, values)
         interpolated_values[nan_mask] = near_interp(query_points[nan_mask])
+    elif np.any(nan_mask):
+        print(f"  - Leaving {np.sum(nan_mask)} outside points as NaN (extrapolate=False)")
 
     # 5. 結果の整形
     out = np.empty((proj_height * proj_width, 4), dtype=np.float32)

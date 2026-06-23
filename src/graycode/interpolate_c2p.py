@@ -182,6 +182,7 @@ def interpolate_c2p_delaunay(
     cam_width: int,
     c2p_list: np.ndarray,
     return_mask: bool = False,
+    extrapolate: bool = True,
 ):
     """
     [New Method]
@@ -230,13 +231,17 @@ def interpolate_c2p_delaunay(
     interpolated_values = lin_interp(query_points)  # shape: (N_pixels, 2)
 
     # 4. NaN部分（凸包の外側）の処理
-    # ドロネー補完はデータの外側を推論できないため、NaNをNearest Neighborで埋めます。
+    # ドロネー補完はデータの外側を推論できないため、既定では NaN を Nearest Neighbor で
+    # 埋める。``extrapolate=False`` のときは埋めず NaN のまま残す（投影領域マスク外を
+    # 穴埋めしない＝外挿オフ。評価では NaN が自動で除外される）。
     nan_mask = np.isnan(interpolated_values[:, 0])
-    if np.any(nan_mask):
+    if extrapolate and np.any(nan_mask):
         print(f"  - Filling {np.sum(nan_mask)} outside points with Nearest Neighbor...")
         # NearestNDInterpolator は `scipy.spatial.KDTree` を使用します
         near_interp = NearestNDInterpolator(points, values)
         interpolated_values[nan_mask] = near_interp(query_points[nan_mask])
+    elif np.any(nan_mask):
+        print(f"  - Leaving {np.sum(nan_mask)} outside points as NaN (extrapolate=False)")
 
     # 5. 結果の整形 (N, 4)
     out = np.empty((cam_height * cam_width, 4), dtype=np.float32)
