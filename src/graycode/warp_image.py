@@ -701,7 +701,9 @@ class PixelMapWarperTorch:
             [[1, 1, 1], [1, 0, 1], [1, 1, 1]],
             device=self.device, dtype=torch.float32,
         )
-        color_kernel = (base / base.sum()).view(1, 1, 3, 3).repeat(channels, 1, 1, 1)
+        # Keep both convolutions in the same (unnormalized) units.  The colour
+        # sum is divided by the number of valid neighbours below.
+        color_kernel = base.view(1, 1, 3, 3).repeat(channels, 1, 1, 1)
         weight_kernel = base.view(1, 1, 3, 3)
         self._inpaint_kernels[channels] = (color_kernel, weight_kernel)
         return color_kernel, weight_kernel
@@ -720,12 +722,11 @@ class PixelMapWarperTorch:
         C = img.shape[1]
         kernel, weight_kernel = self._get_inpaint_kernels(C)
 
-        mask = (count_img == 0).float()
         current_img = img.clone()
         current_valid = (count_img > 0).float()
 
         for _ in range(iterations):
-            is_hole = mask > 0.5
+            is_hole = current_valid < 0.5
 
             neighbor_sum = F.conv2d(
                 current_img * current_valid.expand(-1, C, -1, -1),
@@ -733,16 +734,16 @@ class PixelMapWarperTorch:
             )
             neighbor_weight = F.conv2d(
                 current_valid, weight_kernel, padding=1
-            ).clamp(min=self._eps)
-            neighbor_avg = neighbor_sum / neighbor_weight
+            )
+            can_fill = is_hole & (neighbor_weight > self._eps)
+            neighbor_avg = neighbor_sum / neighbor_weight.clamp(min=self._eps)
 
-            current_img = torch.where(is_hole, neighbor_avg, current_img)
+            current_img = torch.where(can_fill, neighbor_avg, current_img)
             current_valid = torch.where(
-                is_hole & (neighbor_weight > self._eps),
+                can_fill,
                 torch.ones_like(current_valid),
                 current_valid,
             )
-            mask = -F.max_pool2d(-mask, kernel_size=3, stride=1, padding=1)
 
         return current_img
 

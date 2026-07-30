@@ -113,6 +113,27 @@ def test_forward_bilinear_centers_on_single_pixel() -> None:
     assert abs(dst[3, 3] - 100.0) < 1e-4
 
 
+def test_forward_conv_inpaint_propagates_without_dimming() -> None:
+    """Sparse splats are filled outwards while preserving a constant value."""
+    pmap = np.array([[2.0, 2.0, 3.0, 3.0]], dtype=np.float32)
+    w = PixelMapWarperTorch(pmap, device="cpu")
+    src = torch.zeros((1, 6, 6))
+    src[0, 2, 2] = 160.0
+
+    dst = w.forward_warp(
+        src,
+        dst_size=(7, 7),
+        splat_method=SplatMethod.BILINEAR,
+        aggregation=AggregationMethod.MEAN,
+        inpaint=InpaintMethod.CONV,
+        inpaint_iter=2,
+    ).numpy()[0]
+
+    expected = np.zeros((7, 7), dtype=np.float32)
+    expected[1:6, 1:6] = 160.0
+    assert np.allclose(dst, expected, atol=1e-4)
+
+
 def test_forward_backward_roundtrip_identity() -> None:
     H = W = 12
     ys, xs = np.mgrid[0:H, 0:W]
